@@ -110,9 +110,38 @@ fn field_of(
                 .hint_text(hint)
                 .password(secret)
                 .desired_width(if width.is_finite() { width - 12.0 } else { width });
-            ui.add(edit)
+            clipboard_menu(ui.add(edit))
         })
         .inner
+}
+
+pub fn clipboard_menu(response: Response) -> Response {
+    response.context_menu(|ui| {
+        for (label, command) in [
+            ("CUT", egui::ViewportCommand::RequestCut),
+            ("COPY", egui::ViewportCommand::RequestCopy),
+            ("PASTE", egui::ViewportCommand::RequestPaste),
+        ] {
+            if ui.button(legend(label)).clicked() {
+                response.request_focus();
+                ui.ctx().send_viewport_cmd(command);
+                ui.close();
+            }
+        }
+        if ui.button(legend("SELECT ALL")).clicked() {
+            response.request_focus();
+            select_all(ui.ctx(), response.id);
+            ui.close();
+        }
+    });
+    response
+}
+
+fn select_all(ctx: &egui::Context, id: egui::Id) {
+    use egui::text::{CCursor, CCursorRange};
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+    state.store(ctx, id);
 }
 
 pub fn footer(ui: &mut Ui, buttons: impl FnOnce(&mut Ui)) {
@@ -126,4 +155,48 @@ pub fn footer(ui: &mut Ui, buttons: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(egui::Align::Center), buttons);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn select_all_covers_every_character_across_lines() {
+        let ctx = egui::Context::default();
+        let mut text = String::from("héllo\nworld");
+        let mut selected = None;
+        for pass in 0..2 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                let out = egui::TextEdit::multiline(&mut text).show(ui);
+                if pass == 0 {
+                    out.response.request_focus();
+                    super::select_all(ui.ctx(), out.response.id);
+                } else {
+                    selected = out.cursor_range.map(|r| {
+                        let s = r.as_sorted_char_range();
+                        s.start.0..s.end.0
+                    });
+                }
+            });
+        }
+        assert_eq!(selected, Some(0..11));
+    }
+
+    #[test]
+    fn a_paste_after_the_menu_refocuses_lands_in_the_field() {
+        let ctx = egui::Context::default();
+        let mut text = String::from("433");
+        for pass in 0..2 {
+            let mut input = egui::RawInput::default();
+            if pass == 1 {
+                input.events.push(egui::Event::Paste(".92".into()));
+            }
+            let _ = ctx.run_ui(input, |ui| {
+                let response = ui.text_edit_singleline(&mut text);
+                if pass == 0 {
+                    response.request_focus();
+                }
+            });
+        }
+        assert_eq!(text, "433.92");
+    }
 }

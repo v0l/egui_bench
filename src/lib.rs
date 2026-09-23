@@ -13,7 +13,8 @@ pub use theme::install;
 pub mod prelude {
     pub use crate::comb::{Channel, Comb};
     pub use crate::form::{
-        choice, field, field_then, footer, modal_title, prose, row, row_help, secret, switch,
+        choice, clipboard_menu, field, field_then, footer, modal_title, prose, row, row_help,
+        secret, switch,
     };
     pub use crate::meter::{FADER_H, Fader, Threshold, VU_H, bar, progress, vu};
     pub use crate::panel::{card, exit_note, lamp, section, stage_rail, status, tabs, toggle};

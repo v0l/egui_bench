@@ -62,5 +62,5 @@ pub fn hero(ui: &mut Ui, label: &str, v: &str, unit: &str, tint: Color32) {
 }
 
 pub fn reading(ui: &mut Ui, label: &str, text: impl Into<String>) {
-    Line::new().legend(label).column(ui, LABEL_W + LABEL_GAP).value(text).size(11.0).show(ui);
+    Line::new().legend(label).hanging(ui, LABEL_W + LABEL_GAP, Line::new().value(text).size(11.0));
 }

@@ -116,11 +116,7 @@ impl Line {
 
     pub fn show(self, ui: &mut egui::Ui) -> egui::Response {
         let galley = ui.fonts_mut(|f| f.layout_job(self.job));
-        let baseline = galley
-            .rows
-            .first()
-            .map(|r| r.pos.y + r.glyphs.iter().map(|g| g.pos.y).fold(0.0f32, f32::max))
-            .unwrap_or(LINE_BASELINE);
+        let baseline = baseline_of(&galley);
         let size = galley.size();
         let lift = (LINE_BASELINE - baseline).max(0.0);
         let h = LINE_H.max(size.y + lift);
@@ -142,6 +138,34 @@ impl Line {
         self.job.wrap.max_width = ui.available_width();
         ui.add(egui::Label::new(self.job).wrap())
     }
+
+    pub fn hanging(self, ui: &mut egui::Ui, column: f32, value: Line) -> egui::Response {
+        let head = ui.fonts_mut(|f| f.layout_job(self.job));
+        let x = column.max(head.size().x + SPAN_GAP);
+        let width = ui.available_width();
+        let mut job = value.job;
+        job.wrap.max_width = (width - x).max(SPAN_GAP);
+        let tail = ui.fonts_mut(|f| f.layout_job(job));
+        let (head_base, tail_base) = (baseline_of(&head), baseline_of(&tail));
+        let base = LINE_BASELINE.max(head_base).max(tail_base);
+        let h = LINE_H.max(base - head_base + head.size().y).max(base - tail_base + tail.size().y);
+        let w = (x + tail.size().x).min(width.max(x));
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), Sense::hover());
+        if ui.is_rect_visible(rect) {
+            let p = ui.painter();
+            p.galley(egui::pos2(rect.left(), rect.top() + base - head_base), head, VALUE);
+            p.galley(egui::pos2(rect.left() + x, rect.top() + base - tail_base), tail, VALUE);
+        }
+        resp
+    }
+}
+
+fn baseline_of(galley: &egui::Galley) -> f32 {
+    galley
+        .rows
+        .first()
+        .map(|r| r.pos.y + r.glyphs.iter().map(|g| g.pos.y).fold(0.0f32, f32::max))
+        .unwrap_or(LINE_BASELINE)
 }
 
 pub fn note(ui: &mut egui::Ui, text: impl Into<String>, colour: Color32) {
@@ -187,6 +211,21 @@ mod tests {
         let lo = ys.iter().cloned().fold(f32::MAX, f32::min);
         let hi = ys.iter().cloned().fold(f32::MIN, f32::max);
         assert!(hi - lo <= 1.0, "baselines differ by {:.2} px", hi - lo);
+    }
+
+    #[test]
+    fn a_hanging_value_wraps_inside_its_column_and_keeps_to_the_width() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(300.0);
+            let long = "435.3350 MHz GFSK (Mode U - GFSK9k6 - AX.25 Beacon and Ham Payload)";
+            let short = Line::new().legend("level").hanging(ui, 98.0, Line::new().value("-7 dB"));
+            let r = Line::new().legend("downlink").hanging(ui, 98.0, Line::new().value(long));
+            assert!(r.rect.width() <= 300.0, "a row {:.1} wide in 300", r.rect.width());
+            assert!(r.rect.height() >= 2.0 * short.rect.height(), "did not wrap: {:?}", r.rect);
+            assert_eq!(short.rect.height(), LINE_H, "a short row is one line high");
+        });
     }
 
     #[test]

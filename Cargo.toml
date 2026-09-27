@@ -2,9 +2,11 @@
 name = "egui_bench"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+rust-version = "1.92"
+license = "MIT AND OFL-1.1"
 description = "Bench-instrument theme and components for egui: chassis greys, engraved legends, amber readouts, cyan traces."
 repository = "https://github.com/v0l/egui_bench"
+readme = "README.md"
 keywords = ["egui", "gui", "theme", "instrument", "widgets"]
 categories = ["gui"]
 exclude = ["docs/*"]

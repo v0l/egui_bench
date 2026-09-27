@@ -5,7 +5,7 @@ engraved legends, amber readouts, cyan traces. Pulled out of two programs that h
 grown the same panel twice, [waveshark](https://github.com/v0l/super-radio) and
 cycler, and merged into one crate.
 
-![panel](docs/panel.png)
+![panel](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/panel.png)
 
 ## The grammar
 
@@ -32,10 +32,10 @@ panel legends (uppercase, tracked out, silkscreen), mono semibold for figures
 
 ```toml
 [dependencies]
-egui_bench = { git = "https://github.com/v0l/egui_bench" }
+egui_bench = "0.1"
 ```
 
-```rust
+```rust,ignore
 // once, at startup
 egui_bench::install(&cc.egui_ctx);
 
@@ -72,14 +72,15 @@ and two labels in a `ui.horizontal` are two galleys that egui centres against
 each other, so the row sits a pixel out everywhere it appears. `Line` lays every
 span into one `LayoutJob` and paints it on a fixed baseline:
 
-```rust
+```rust,ignore
 Line::new().legend("squelch").column(ui, 98.0).set("-78 dB").show(ui);
 Line::new().legend("heard").measured("-93.4 dBm").show(ui);
 ```
 
 `.set()` is amber, `.measured()` is cyan, `.value()` is neutral, `.note()` is
 prose. `.column(ui, x)` starts the next span at a fixed offset so a stack of
-readings aligns. `.show()`, `.elided()` and `.wrapped()` end it.
+readings aligns. `.show()`, `.elided()` and `.wrapped()` end it, and
+`.hanging(ui, x, value)` wraps a long value under its own column.
 
 ### `panel` - blocks and state
 
@@ -100,7 +101,8 @@ readings aligns. `.show()`, `.elided()` and `.wrapped()` end it.
   unit small beside it, legend under it.
 - `readout` / `readouts`: captioned figures on a fixed pitch, so three in one
   card line up with three in the card beside it, wrapping when the pane narrows.
-- `reading(ui, label, text)`: a label-column row built on `Line`.
+- `reading(ui, label, text)`: a label-column row built on `Line`, the value
+  wrapping under its column when it is too long for the pane.
 
 ### `meter` - levels
 
@@ -147,8 +149,8 @@ cargo run --example gallery meters
 cargo run --example gallery data
 ```
 
-![meters](docs/meters.png)
-![data](docs/data.png)
+![meters](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/meters.png)
+![data](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/data.png)
 
 ## Licence
 

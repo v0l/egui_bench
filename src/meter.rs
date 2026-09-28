@@ -53,6 +53,20 @@ fn handle(p: &egui::Painter, rect: Rect, x: f32, hot: bool) {
     p.rect_filled(h.shrink(1.0), 1.0, if hot { VALUE } else { READOUT });
 }
 
+const WHEEL_NOTCH: f32 = 50.0;
+
+fn wheel(ui: &Ui, resp: &Response) -> f32 {
+    if !resp.hovered() {
+        return 0.0;
+    }
+    let delta = ui.input(|i| i.smooth_scroll_delta);
+    if delta == Vec2::ZERO {
+        return 0.0;
+    }
+    ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+    (delta.y + delta.x) / WHEEL_NOTCH
+}
+
 pub struct Fader<'a> {
     value: &'a mut f32,
     peak: f32,
@@ -85,6 +99,11 @@ impl Widget for Fader<'_> {
                 *self.value = t;
                 resp.mark_changed();
             }
+        }
+        let notches = wheel(ui, &resp);
+        if notches != 0.0 {
+            *self.value = (*self.value + notches * 0.02).clamp(0.0, 1.0);
+            resp.mark_changed();
         }
         if !ui.is_rect_visible(rect) {
             return resp;
@@ -135,6 +154,11 @@ impl Widget for Threshold<'_> {
                 *self.value = v;
                 resp.mark_changed();
             }
+        }
+        let notches = wheel(ui, &resp);
+        if notches != 0.0 {
+            *self.value = (*self.value + notches * (hi - lo) / 50.0).clamp(lo, hi);
+            resp.mark_changed();
         }
         if !ui.is_rect_visible(rect) {
             return resp;
@@ -197,5 +221,42 @@ pub fn bar(p: &egui::Painter, r: Rect, fraction: f32, tint: Color32) {
             0.0,
             tint,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wheel_over(value: f32, at: Pos2, notches: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let mut v = value;
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 100.0));
+        for frame in 0..60 {
+            let mut events = vec![egui::Event::PointerMoved(at)];
+            if frame == 1 {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, notches),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                ui.add(Fader::new(&mut v, 0.0).width(200.0));
+            });
+        }
+        v
+    }
+
+    #[test]
+    fn the_wheel_moves_a_fader_under_the_pointer_and_no_other() {
+        let up = wheel_over(0.5, Pos2::new(100.0, 12.0), 1.0);
+        let down = wheel_over(0.5, Pos2::new(100.0, 12.0), -1.0);
+        let away = wheel_over(0.5, Pos2::new(100.0, 90.0), 1.0);
+        assert!(up > 0.5 && up < 0.6, "one notch up moved it to {up}");
+        assert!(down < 0.5 && down > 0.4, "one notch down moved it to {down}");
+        assert_eq!(away, 0.5, "a wheel away from the fader moved it");
     }
 }

@@ -9,6 +9,8 @@ pub mod table;
 pub mod text;
 pub mod theme;
 pub mod trace;
+#[cfg(feature = "viewer3d")]
+pub mod viewer3d;
 
 pub use theme::install;
 

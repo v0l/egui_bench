@@ -1,6 +1,6 @@
 [package]
 name = "egui_bench"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT AND OFL-1.1"
@@ -11,8 +11,13 @@ keywords = ["egui", "gui", "theme", "instrument", "widgets"]
 categories = ["gui"]
 exclude = ["docs/*"]
 
+[features]
+viewer3d = ["dep:three-d", "dep:egui_glow"]
+
 [dependencies]
 egui = "0.35"
+egui_glow = { version = "0.35", optional = true }
+three-d = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 eframe = { version = "0.35", default-features = false, features = [
@@ -24,3 +29,10 @@ eframe = { version = "0.35", default-features = false, features = [
 
 [[example]]
 name = "gallery"
+
+[[example]]
+name = "viewer3d"
+required-features = ["viewer3d"]
+
+[package.metadata.docs.rs]
+features = ["viewer3d"]

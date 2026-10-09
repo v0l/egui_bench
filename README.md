@@ -32,7 +32,7 @@ panel legends (uppercase, tracked out, silkscreen), mono semibold for figures
 
 ```toml
 [dependencies]
-egui_bench = "0.1"
+egui_bench = "0.2"
 ```
 
 ```rust,ignore
@@ -141,16 +141,64 @@ header and striped rows and hands you a painter, a rect and the column offsets;
 edge and tabular figures, rather than egui's default grey box, which on this
 chassis is the one thing that looks pasted on.
 
+### `viewer3d` - a 3D viewport (feature `viewer3d`)
+
+```toml
+egui_bench = { version = "0.2", features = ["viewer3d"] }
+```
+
+The shaded model view out of gcad and agentee: key and fill light, edges drawn at
+a fixed pixel width and lifted toward the eye so they never poke through walls,
+section cuts with capped solids, see-through and selected parts, and a software
+renderer for headless screenshots. Drawing goes through `three-d` on egui's glow
+context, so the app needs `eframe` with `glow` and a depth buffer.
+
+A `Scene` is triangles (`Surface`) and polylines (`Lines`) in groups. Each frame
+a `Look` per group places it (a column-major 4x4), fades it, or selects it.
+
+Materials are the app's own type. Anything `Copy + Eq + Hash + Default` becomes
+one by saying how it shades, and surfaces that share a group, material and
+texture go to the GPU as one draw:
+
+```rust,ignore
+use egui_bench::viewer3d::*;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+enum Finish { #[default] Mask, Copper, Silk }
+
+impl Material for Finish {
+    fn shading(&self) -> Shading {
+        match self {
+            Finish::Copper => Shading { gloss: 0.46, sharpness: 82.0, metal: 0.8, ..Default::default() },
+            _ => Shading::default(),
+        }
+    }
+}
+
+let mut viewer = Viewer::new(scene.clone(), self.camera).looks(looks).cut(cut);
+viewer.navigate(ui, &response, &mut self.orbit);
+self.camera = viewer.camera();
+viewer.paint(ui, rect);
+let hit = viewer.pick(rect, pointer);
+```
+
+`navigate` orbits about the point under the pointer, pans with shift or the
+secondary button, and zooms toward the pointer. `Camera::framed` fits a region,
+`Projector` maps between world and screen for overlays, and
+`Viewer::render_soft(w, h)` gives a `ColorImage` without a GPU.
+
 ## Gallery
 
 ```sh
 cargo run --example gallery          # panel
 cargo run --example gallery meters
 cargo run --example gallery data
+cargo run --example viewer3d --features viewer3d
 ```
 
 ![meters](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/meters.png)
 ![data](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/data.png)
+![viewer3d](https://raw.githubusercontent.com/v0l/egui_bench/master/docs/viewer3d.png)
 
 ## Licence
 

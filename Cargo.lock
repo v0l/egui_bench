@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "egui_bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "eframe",
  "egui",

@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod browser;
 pub mod comb;
 pub mod form;
 pub mod meter;
@@ -15,6 +16,7 @@ pub mod viewer3d;
 pub use theme::install;
 
 pub mod prelude {
+    pub use crate::browser::{Browser, Picked};
     pub use crate::comb::{Channel, Comb};
     pub use crate::form::{
         choice, clipboard_menu, field, field_then, footer, modal_title, prose, row, row_help,

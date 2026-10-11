@@ -141,6 +141,13 @@ header and striped rows and hands you a painter, a rect and the column offsets;
 edge and tabular figures, rather than egui's default grey box, which on this
 chassis is the one thing that looks pasted on.
 
+### `browser` - an open dialog
+
+`Browser::new(title, dir)` is a modal that walks folders and lists the files
+whose names end in one of `.suffixes(...)`. Call `show(ctx)` each frame while it
+is up; it returns `Picked::File` or `Picked::Folder` (with `.folders(true)`) once
+a choice is made, and `Picked::Cancelled` on cancel or escape.
+
 ### `viewer3d` - a 3D viewport (feature `viewer3d`)
 
 ```toml

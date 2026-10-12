@@ -4,16 +4,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use web_time::{Duration, Instant};
 use three_d::{
     AxisAlignedBoundingBox, Blend, ClearState, ColorTexture, Context, CpuMesh, CpuTexture, Cull,
-    DepthTexture, Effect, EffectMaterialId, Geometry, GeometryId, Gm, Interpolation, Light, Mat4,
-    MaterialType, Mesh, Mipmap, Object, Positions, Program, RenderStates, RenderTarget, ScissorBox,
-    SquareMatrix, Srgba, Texture2D, TextureData, Vec3, Vec4, VertexBuffer, Viewport, Wrapping,
-    WriteMask, radians, render_with_effect, render_with_material, vec2, vec3, vec4,
+    DepthTexture, Effect, EffectMaterialId, Geometry, GeometryId, Gm, HasContext, InnerSpace,
+    Interpolation, Light, Mat4, MaterialType, Mesh, Mipmap, Object, Positions, Program,
+    RenderStates, RenderTarget, ScissorBox, SquareMatrix, Srgba, Texture2D, TextureData, Vec3,
+    Vec4, VertexBuffer, Viewport, Wrapping, WriteMask, radians, render_with_effect,
+    render_with_material, vec2, vec3, vec4,
 };
-
-const LIFT: f32 = 2.0;
+use web_time::{Duration, Instant};
 
 struct Shaded {
     texture: Option<Arc<Texture2D>>,
@@ -143,28 +142,18 @@ uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
 uniform vec2 viewportSize;
 uniform float lineWidth;
-uniform float lift;
 in vec3 start;
 in vec3 end;
 in vec2 corner;
 out vec3 pos;
 
-vec4 lifted(vec3 p) {
-    vec4 v = viewMatrix * modelMatrix * vec4(p, 1.0);
-    bool perspective = projectionMatrix[2][3] != 0.0;
-    float pixel = 2.0 / (projectionMatrix[1][1] * viewportSize.y);
-    if (perspective) {
-        float range = length(v.xyz);
-        v.xyz *= max(range - lift * pixel * -v.z, 0.0) / range;
-    } else {
-        v.z += lift * pixel;
-    }
-    return projectionMatrix * v;
+vec4 projected(vec3 p) {
+    return projectionMatrix * viewMatrix * modelMatrix * vec4(p, 1.0);
 }
 
 void main() {
-    vec4 a = lifted(start);
-    vec4 b = lifted(end);
+    vec4 a = projected(start);
+    vec4 b = projected(end);
     bool first = corner.x < 0.5;
     vec4 here = first ? a : b;
     vec2 along = (b.xy / b.w - a.xy / a.w) * viewportSize;
@@ -221,14 +210,15 @@ impl Geometry for EdgeLines {
         let viewport = viewer.viewport();
         program.use_uniform("viewMatrix", viewer.view());
         program.use_uniform("projectionMatrix", viewer.projection());
-        program.use_uniform("lift", self.pixels * LIFT);
         program.use_uniform("modelMatrix", self.transformation);
         program.use_uniform("viewportSize", vec2(viewport.width as f32, viewport.height as f32));
         program.use_uniform("lineWidth", self.pixels);
         program.use_vertex_attribute("start", &self.start);
         program.use_vertex_attribute("end", &self.end);
         program.use_vertex_attribute("corner", &self.corner);
+        unsafe { self.context.disable(three_d::context::POLYGON_OFFSET_FILL) };
         program.draw_arrays(render_states, viewport, self.count);
+        unsafe { self.context.enable(three_d::context::POLYGON_OFFSET_FILL) };
     }
 
     fn vertex_shader_source(&self) -> String {
@@ -497,6 +487,35 @@ fn update(uploaded: &mut Uploaded, viewer: &Viewer<impl Material>, vw: &super::V
     }
 }
 
+fn depth_range(shown: &[&dyn Object], vw: &super::View, ortho: bool) -> (f32, f32) {
+    let eye = v3(vw.eye);
+    let forward = v3(vw.forward);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for object in shown {
+        let aabb = object.aabb();
+        if aabb.is_empty() || aabb.is_infinite() {
+            continue;
+        }
+        let (min, max) = (aabb.min(), aabb.max());
+        for k in 0..8 {
+            let corner = vec3(
+                if k & 1 == 0 { min.x } else { max.x },
+                if k & 2 == 0 { min.y } else { max.y },
+                if k & 4 == 0 { min.z } else { max.z },
+            );
+            let depth = (corner - eye).dot(forward);
+            lo = lo.min(depth);
+            hi = hi.max(depth);
+        }
+    }
+    if hi < lo || (!ortho && hi <= 0.0) {
+        return (vw.near, vw.far);
+    }
+    let pad = (hi - lo).max(vw.dist * 1.0e-3) * 0.01;
+    let (near, far) = (lo - pad, hi + pad);
+    if ortho { (near, far) } else { (near.max(far * 1.0e-3), far) }
+}
+
 pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: Viewer<M>) {
     let pass = ui.ctx().cumulative_pass_nr();
     let callback = egui_glow::CallbackFn::new(move |info, painter| {
@@ -525,6 +544,21 @@ pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: Viewer<M>) {
                 width: vp.width_px.max(1) as u32,
                 height: vp.height_px.max(1) as u32,
             };
+            let visible = |group: usize| viewer.look(group).visible();
+            let shown: Vec<&dyn Object> = uploaded
+                .batches
+                .iter()
+                .filter(|b| visible(b.group))
+                .map(|b| &b.gm as &dyn Object)
+                .chain(
+                    uploaded
+                        .strokes
+                        .iter()
+                        .filter(|s| visible(s.group))
+                        .map(|s| &s.gm as &dyn Object),
+                )
+                .collect();
+            let (near, far) = depth_range(&shown, &vw, viewer.camera.ortho);
             let camera = if viewer.camera.ortho {
                 three_d::Camera::new_orthographic(
                     viewport,
@@ -532,8 +566,8 @@ pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: Viewer<M>) {
                     v3(vw.target),
                     v3(vw.up),
                     vp.height_px as f32 / vw.focal,
-                    vw.near,
-                    vw.far,
+                    near,
+                    far,
                 )
             } else {
                 three_d::Camera::new_perspective(
@@ -542,8 +576,8 @@ pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: Viewer<M>) {
                     v3(vw.target),
                     v3(vw.up),
                     radians(vw.fov_y),
-                    vw.near,
-                    vw.far,
+                    near,
+                    far,
                 )
             };
             let x0 = clip.left_px.max(vp.left_px);
@@ -562,21 +596,18 @@ pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: Viewer<M>) {
             };
             let [r, g, b] = rgb(viewer.style.background);
             target.clear_partially(scissor, ClearState::color_and_depth(r, g, b, 1.0, 1.0));
-            let visible = |group: usize| viewer.look(group).visible();
-            let shown: Vec<&dyn Object> = uploaded
-                .batches
+            let widest = uploaded
+                .strokes
                 .iter()
-                .filter(|b| visible(b.group))
-                .map(|b| &b.gm as &dyn Object)
-                .chain(
-                    uploaded
-                        .strokes
-                        .iter()
-                        .filter(|s| visible(s.group))
-                        .map(|s| &s.gm as &dyn Object),
-                )
-                .collect();
+                .filter(|s| visible(s.group))
+                .map(|s| s.gm.geometry.pixels)
+                .fold(0.0, f32::max);
+            unsafe {
+                context.enable(three_d::context::POLYGON_OFFSET_FILL);
+                context.polygon_offset(widest * 0.5 + 1.0, 1.0);
+            }
             target.render_partially(scissor, &camera, shown, &[]);
+            unsafe { context.disable(three_d::context::POLYGON_OFFSET_FILL) };
             let _ = target.into_framebuffer();
         });
         DRAW_MICROS.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);

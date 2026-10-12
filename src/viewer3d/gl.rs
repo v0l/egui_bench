@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 use three_d::{
     AxisAlignedBoundingBox, Blend, ClearState, ColorTexture, Context, CpuMesh, CpuTexture, Cull,
     DepthTexture, Effect, EffectMaterialId, Geometry, GeometryId, Gm, Interpolation, Light, Mat4,

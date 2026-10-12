@@ -18,6 +18,7 @@ viewer3d = ["dep:three-d", "dep:egui_glow"]
 egui = "0.35"
 egui_glow = { version = "0.35", optional = true }
 three-d = { version = "0.19", default-features = false, optional = true }
+web-time = "1"
 
 [dev-dependencies]
 eframe = { version = "0.35", default-features = false, features = [

@@ -93,7 +93,28 @@ readings aligns. `.show()`, `.elided()` and `.wrapped()` end it, and
 - `status(ui, ok, text)`: a dot and a sentence, for validation in a dialog.
 - `stage_rail(ui, stages, at, now, height, muted)`: a real sequence drawn as one,
   stages behind you dim, the running one lit, the ones ahead outlined.
+- `chip(ui, text, tint, lit)`: a small state tag in any colour, for a card corner.
+- `heading(ui, label)`: an engraved legend with a rule running to the edge, for
+  a group of cards.
+- `segments(ui, &mut current, &[(value, label, count)])`: a joined filter bar,
+  the chosen segment amber and underlined, each with an optional count.
 - `exit_note`, `tabs`.
+
+### `key` - push buttons
+
+`Key::new("launch").solid(VALUE)` is a 30 px button with an engraved label,
+`.outline(tint)` the quieter one beside it, `Key::more()` the three-dot menu key.
+They take keyboard focus and draw an amber ring when they have it. `ui.add(key)`
+lays one out; `key.paint(ui, rect)` puts it in a rect you have measured, with
+`.id_salt(..)` keeping its focus when the layout shifts. `busy(ui, rect, done,
+label, tint)` is the same shape filling with progress, or sweeping when the end
+is unknown, so a key can turn into its own progress bar.
+
+### `drop` - a file over the window
+
+`drop::hovering(ctx)` says whether files are being dragged over the window and
+which, and `drop::overlay(ctx, image, headline, note, tint)` dims the window
+and says what letting go will do.
 
 ### `readout` - figures
 
@@ -193,6 +214,37 @@ let hit = viewer.pick(rect, pointer);
 secondary button, and zooms toward the pointer. `Camera::framed` fits a region,
 `Projector` maps between world and screen for overlays, and
 `Viewer::render_soft(w, h)` gives a `ColorImage` without a GPU.
+
+### `update` - GitHub release updates (feature `update`)
+
+An `Updater` per repo asks `/releases/latest` on a thread, compares the tag with
+the version you are running, and fetches an asset with a progress bar, checking
+the size and the sha256 GitHub publishes for it. What happens to the download is
+yours: the closure you pass gets the file. `Updater::cached` keeps the last
+answer on disk and asks again with its ETag, so a check that finds nothing new
+does not count against GitHub's 60 an hour, and a check made after the limit
+is spent still has an answer.
+
+```rust,ignore
+let up = Updater::new("v0l/gcad", Some(env!("CARGO_PKG_VERSION").into()));
+up.check(ctx);
+if let State::Newer(r) = up.state()
+    && let Some(asset) = r.asset("gcad-x86_64-unknown-linux-gnu.tar.gz")
+{
+    up.install(ctx, &r, asset, |file| {
+        let dir = file.with_extension("unpacked");
+        update::unpack(file, &dir)?;
+        update::replace_self(&update::find_file(&dir, "gcad").ok_or("no gcad")?)
+    });
+}
+up.status(ui);
+```
+
+`unpack` reads `.tar.gz`, `.zip`, `.dmg` (macOS) or takes a bare binary.
+`replace` swaps a file or an `.app` folder by renaming, so a running program can
+be replaced, Windows included; `sweep` clears the `.old` copies Windows would not
+let go of. `replace_self` and `relaunch` are the self-update pair, and
+`probe_version` reads `--version` from a binary you did not build.
 
 ## Gallery
 

@@ -239,3 +239,189 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(T, &s
     ui.add_space(10.0);
     changed
 }
+
+pub fn chip(ui: &mut Ui, text: &str, tint: Color32, lit: bool) -> Response {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &text.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: theme::legend_font(10.5),
+            color: tint,
+            extra_letter_spacing: 1.4,
+            ..Default::default()
+        },
+    );
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let size = galley.size() + Vec2::new(14.0, 6.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        p.rect_filled(rect, RADIUS, if lit { tint.gamma_multiply(0.16) } else { WELL });
+        p.rect_stroke(
+            rect,
+            RADIUS,
+            Stroke::new(1.0, if lit { tint } else { ETCH }),
+            StrokeKind::Inside,
+        );
+        p.galley(rect.center() - galley.size() / 2.0, galley, tint);
+    }
+    resp
+}
+
+pub fn heading(ui: &mut Ui, label: &str) -> Response {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &label.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: theme::legend_font(12.0),
+            color: LEGEND,
+            extra_letter_spacing: 2.0,
+            ..Default::default()
+        },
+    );
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), galley.size().y), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let y = rect.center().y;
+        let from = rect.left() + galley.size().x + 12.0;
+        let p = ui.painter();
+        p.galley(rect.left_top(), galley, LEGEND);
+        if from < rect.right() {
+            p.line_segment(
+                [Pos2::new(from, y), Pos2::new(rect.right(), y)],
+                Stroke::new(1.0, ETCH),
+            );
+        }
+    }
+    resp
+}
+
+pub fn segments<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    current: &mut T,
+    options: &[(T, &str, Option<usize>)],
+) -> bool {
+    let mut changed = false;
+    let top = ui.cursor().top();
+    let mut x = ui.cursor().left();
+    for (n, (value, label, count)) in options.iter().enumerate() {
+        let on = *current == *value;
+        let tint = if on { READOUT } else { LEGEND };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &label.to_uppercase(),
+            0.0,
+            egui::TextFormat {
+                font_id: theme::legend_font(LEGEND_SIZE),
+                color: tint,
+                extra_letter_spacing: 1.5,
+                ..Default::default()
+            },
+        );
+        if let Some(c) = count {
+            let ink = if on { READOUT } else { LEGEND.gamma_multiply(0.7) };
+            job.append(
+                &c.to_string(),
+                8.0,
+                egui::TextFormat {
+                    font_id: theme::figure(LEGEND_SIZE),
+                    color: ink,
+                    ..Default::default()
+                },
+            );
+        }
+        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let rect = Rect::from_min_size(
+            Pos2::new(x, top),
+            Vec2::new(galley.size().x + 26.0, crate::key::KEY_H),
+        );
+        let resp = ui.interact(rect, ui.id().with(("segment", n)), Sense::click());
+        if ui.is_rect_visible(rect) {
+            let p = ui.painter();
+            let fill = if on {
+                READOUT.gamma_multiply(0.14)
+            } else if resp.hovered() {
+                theme::BAND
+            } else {
+                WELL
+            };
+            p.rect_filled(rect, 0.0, fill);
+            p.rect_stroke(rect, 0.0, Stroke::new(1.0, ETCH), StrokeKind::Inside);
+            if on {
+                let mark = Rect::from_min_max(
+                    Pos2::new(rect.left(), rect.bottom() - 2.0),
+                    rect.right_bottom(),
+                );
+                p.rect_filled(mark, 0.0, READOUT);
+            }
+            p.galley(rect.center() - galley.size() / 2.0, galley, tint);
+            crate::key::focus_ring(ui, &resp, rect);
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() && !on {
+            *current = *value;
+            changed = true;
+        }
+        x = rect.right() - 1.0;
+    }
+    let left = ui.cursor().left();
+    ui.allocate_rect(
+        Rect::from_min_max(Pos2::new(left, top), Pos2::new(x + 1.0, top + crate::key::KEY_H)),
+        Sense::hover(),
+    );
+    changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Pick {
+        All,
+        Some,
+    }
+
+    fn frame(ctx: &egui::Context, pick: &mut Pick, events: Vec<egui::Event>) -> Vec<Rect> {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 200.0));
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut rects = Vec::new();
+        let out = ctx.run_ui(input, |ui| {
+            segments(ui, pick, &[(Pick::All, "all", Some(6)), (Pick::Some, "some", Some(2))]);
+        });
+        for c in &out.shapes {
+            if let egui::Shape::Text(t) = &c.shape {
+                rects.push(t.galley.rect.translate(t.pos.to_vec2()));
+            }
+        }
+        rects
+    }
+
+    #[test]
+    fn a_segment_click_picks_it() {
+        let ctx = egui::Context::default();
+        crate::install(&ctx);
+        let mut pick = Pick::All;
+        let texts = frame(&ctx, &mut pick, vec![]);
+        let at = texts[1].center();
+        let click = |pressed| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(&ctx, &mut pick, click(true));
+        frame(&ctx, &mut pick, click(false));
+        assert_eq!(pick, Pick::Some);
+    }
+}

@@ -13,12 +13,19 @@ exclude = ["docs/*"]
 
 [features]
 viewer3d = ["dep:three-d", "dep:egui_glow"]
+update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "dep:zip"]
 
 [dependencies]
 egui = "0.35"
 egui_glow = { version = "0.35", optional = true }
+flate2 = { version = "1.1.10", optional = true }
+serde_json = { version = "1.0.154", optional = true }
+sha2 = { version = "0.11.1", optional = true }
+tar = { version = "0.4.46", optional = true }
 three-d = { version = "0.19", default-features = false, optional = true }
+ureq = { version = "3.4", optional = true }
 web-time = "1"
+zip = { version = "9.0.2", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
 eframe = { version = "0.35", default-features = false, features = [
@@ -36,4 +43,4 @@ name = "viewer3d"
 required-features = ["viewer3d"]
 
 [package.metadata.docs.rs]
-features = ["viewer3d"]
+features = ["viewer3d", "update"]

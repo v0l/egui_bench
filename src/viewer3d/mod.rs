@@ -1,4 +1,4 @@
-mod gl;
+mod gpu;
 mod soft;
 
 use egui::{Color32, ColorImage, Pos2, Rect, Response, Ui, Vec2};
@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use gl::draw_time;
+pub use gpu::{draw_time, install, installed};
 
 pub type V3 = [f32; 3];
 pub type Placement = [f32; 16];
@@ -510,7 +510,7 @@ impl<M: Material> Viewer<M> {
     }
 
     pub fn paint(&self, ui: &Ui, rect: Rect) {
-        gl::paint(ui, rect, self.clone());
+        gpu::paint(ui, rect, self);
     }
 
     pub fn render_soft(&self, width: usize, height: usize) -> ColorImage {

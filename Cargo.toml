@@ -1,6 +1,6 @@
 [package]
 name = "egui_bench"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT AND OFL-1.1"
@@ -12,28 +12,34 @@ categories = ["gui"]
 exclude = ["docs/*"]
 
 [features]
-viewer3d = ["dep:three-d", "dep:egui_glow"]
+viewer3d = ["dep:egui-wgpu", "dep:wgpu", "dep:bytemuck"]
 update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "dep:zip"]
 
 [dependencies]
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
 egui = "0.35"
-egui_glow = { version = "0.35", optional = true }
+egui-wgpu = { version = "0.35", optional = true }
 flate2 = { version = "1.1.10", optional = true }
 serde_json = { version = "1.0.154", optional = true }
 sha2 = { version = "0.11.1", optional = true }
 tar = { version = "0.4.46", optional = true }
-three-d = { version = "0.19", default-features = false, optional = true }
 ureq = { version = "3.4", optional = true }
 web-time = "1"
+wgpu = { version = "29", default-features = false, features = ["wgsl"], optional = true }
 zip = { version = "9.0.2", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
+egui_kittest = { version = "0.35", features = ["wgpu"] }
 eframe = { version = "0.35", default-features = false, features = [
     "default_fonts",
-    "glow",
+    "wgpu",
     "wayland",
     "x11",
 ] }
+
+[[test]]
+name = "viewer3d"
+required-features = ["viewer3d"]
 
 [[example]]
 name = "gallery"

@@ -207,8 +207,6 @@ impl eframe::App for Demo {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 760.0]),
-        depth_buffer: 24,
-        multisampling: 4,
         ..Default::default()
     };
     eframe::run_native(
@@ -216,6 +214,9 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             egui_bench::install(&cc.egui_ctx);
+            if let Some(state) = &cc.wgpu_render_state {
+                egui_bench::viewer3d::install(state);
+            }
             Ok(Box::new(Demo {
                 scene: Arc::new(scene()),
                 camera: Camera::default(),

@@ -172,14 +172,25 @@ a choice is made, and `Picked::Cancelled` on cancel or escape.
 ### `viewer3d` - a 3D viewport (feature `viewer3d`)
 
 ```toml
-egui_bench = { version = "0.2", features = ["viewer3d"] }
+egui_bench = { version = "0.3", features = ["viewer3d"] }
 ```
 
 The shaded model view out of gcad and agentee: key and fill light, edges drawn at
 a fixed pixel width and lifted toward the eye so they never poke through walls,
 section cuts with capped solids, see-through and selected parts, and a software
-renderer for headless screenshots. Drawing goes through `three-d` on egui's glow
-context, so the app needs `eframe` with `glow` and a depth buffer.
+renderer for headless screenshots. Drawing goes through wgpu on egui's own
+device, so the app runs `eframe` with `wgpu` and hands the viewer its render
+state once at start:
+
+```rust,ignore
+if let Some(state) = &cc.wgpu_render_state {
+    egui_bench::viewer3d::install(state);
+}
+```
+
+Each viewport renders into its own 4x multisampled texture, so the app needs no
+depth buffer or multisampling of its own. Without `install` the viewer falls
+back to the software renderer.
 
 A `Scene` is triangles (`Surface`) and polylines (`Lines`) in groups. Each frame
 a `Look` per group places it (a column-major 4x4), fades it, or selects it.

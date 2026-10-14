@@ -1,10 +1,29 @@
-use super::{Image, Material, Shading, Style, V3, View, Viewer, add, dot, norm, rgb, scale, sub};
+use super::{
+    Image, Material, Shading, Style, V3, View, Viewer, add, dot, norm, rgb, scale, sub, to_linear,
+};
 use egui::{Color32, ColorImage, Vec2};
 
 const SUPERSAMPLE: usize = 2;
 
-fn to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+struct Lights {
+    key: V3,
+    fill: V3,
+    key_radiance: V3,
+    fill_radiance: V3,
+    exposure: f32,
+}
+
+impl Lights {
+    fn new(style: &Style, vw: &View) -> Lights {
+        let l = &style.lighting;
+        Lights {
+            key: l.direction(&l.key, vw),
+            fill: l.direction(&l.fill, vw),
+            key_radiance: l.key.radiance(),
+            fill_radiance: l.fill.radiance(),
+            exposure: l.exposure,
+        }
+    }
 }
 
 fn to_srgb(c: f32) -> f32 {
@@ -12,22 +31,28 @@ fn to_srgb(c: f32) -> f32 {
     if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
-fn shade(albedo: V3, n: V3, v: V3, shading: Shading, style: &Style, vw: &View) -> V3 {
+fn shade(albedo: V3, n: V3, v: V3, shading: Shading, style: &Style, lights: &Lights) -> V3 {
     let n = if dot(n, v) < 0.0 { scale(n, -1.0) } else { n };
-    let d =
-        style.ambient + style.key * dot(n, vw.key).max(0.0) + style.fill * dot(n, vw.fill).max(0.0);
-    let h = norm(add(vw.key, v));
+    let ambient = style.lighting.environment(n);
+    let (k, f) = (dot(n, lights.key).max(0.0), dot(n, lights.fill).max(0.0));
+    let h = norm(add(lights.key, v));
     let sp = shading.gloss * dot(n, h).max(0.0).powf(shading.sharpness);
-    [0, 1, 2].map(|k| {
-        let shine = 1.0 + (albedo[k] * 1.6 - 1.0) * shading.metal;
-        to_srgb(albedo[k] * d + sp * shine)
+    [0, 1, 2].map(|c| {
+        let d = ambient[c] + lights.key_radiance[c] * k + lights.fill_radiance[c] * f;
+        let shine = 1.0 + (albedo[c] * 1.6 - 1.0) * shading.metal;
+        to_srgb((albedo[c] * d + sp * shine * lights.key_radiance[c]) * lights.exposure)
     })
 }
 
-fn cap(style: &Style, normal: V3, vw: &View) -> V3 {
-    let c = norm(normal);
-    let d = style.ambient + style.key * dot(c, vw.key).abs() + style.fill * dot(c, vw.fill).abs();
-    rgb(style.cap).map(|k| to_srgb(to_linear(k) * d))
+fn cap(style: &Style, normal: V3, lights: &Lights) -> V3 {
+    let n = norm(normal);
+    let ambient = style.lighting.environment(n);
+    let (k, f) = (dot(n, lights.key).abs(), dot(n, lights.fill).abs());
+    let colour = rgb(style.cap);
+    [0, 1, 2].map(|c| {
+        let d = ambient[c] + lights.key_radiance[c] * k + lights.fill_radiance[c] * f;
+        to_srgb(to_linear(colour[c]) * d * lights.exposure)
+    })
 }
 
 fn sample(image: &Image, u: f32, v: f32) -> V3 {
@@ -50,6 +75,7 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
     let background = rgb(style.background);
     let (w, h) = (width * SUPERSAMPLE, height * SUPERSAMPLE);
     let vw = viewer.view(Vec2::new(width as f32, height as f32));
+    let lights = Lights::new(&style, &vw);
     let ortho = viewer.camera.ortho;
     let focal = vw.focal * SUPERSAMPLE as f32;
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
@@ -127,7 +153,7 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                         && look.opacity >= 1.0
                         && let Some(c) = viewer.cut
                     {
-                        colour[i] = cap(&style, c.normal, &vw);
+                        colour[i] = cap(&style, c.normal, &lights);
                         continue;
                     }
                     let n = norm(look.turn(lerp(&surface.normals)));
@@ -141,7 +167,7 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                     };
                     let albedo = [0, 1, 2].map(|k| albedo[k] + (selected[k] - albedo[k]) * tint);
                     let v = if ortho { scale(vw.forward, -1.0) } else { norm(sub(vw.eye, pos)) };
-                    colour[i] = shade(albedo, n, v, shading, &style, &vw);
+                    colour[i] = shade(albedo, n, v, shading, &style, &lights);
                 }
             }
         }

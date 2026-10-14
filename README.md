@@ -226,6 +226,47 @@ secondary button, and zooms toward the pointer. `Camera::framed` fits a region,
 `Projector` maps between world and screen for overlays, and
 `Viewer::render_soft(w, h)` gives a `ColorImage` without a GPU.
 
+#### Lighting
+
+`Style::lighting` holds a key and a fill light, each with an azimuth,
+elevation, intensity, colour and softness, plus an ambient sky and ground
+colour and an exposure. With `follow` set the lights turn with the camera;
+without it they stay put in the world, Z up. `Lighting::STUDIO` is the default
+look, and `viewer3d::lighting_controls(ui, &mut lighting)` draws a panel of
+sliders for all of it.
+
+```rust,ignore
+let viewer = Viewer::new(scene, camera).lighting(self.lighting);
+```
+
+#### Ray tracing
+
+`Viewer::trace(Some(Trace { samples, bounces, per_frame }))` path traces the
+view once the camera stops: soft shadows from both lights, ambient occlusion,
+reflections off metal and light bounced between parts. While the view moves it
+draws as usual; once still, it adds `per_frame` samples a frame until it has
+`samples`, and swaps to the traced picture after the first 16. Edges and
+polylines are still drawn on top, cuts are capped, and see-through parts let
+light through. `paint` returns a `Painted` saying how far it has got.
+
+On GPUs with ray tracing hardware it uses wgpu's ray queries, which egui's
+device does not ask for by default. Request them in the app's options:
+
+```rust,ignore
+let options = eframe::NativeOptions {
+    wgpu_options: egui_wgpu::WgpuConfiguration {
+        wgpu_setup: egui_bench::viewer3d::wgpu_setup(),
+        ..Default::default()
+    },
+    ..Default::default()
+};
+```
+
+Without them it traces a BVH in a compute shader, which gives the same picture
+much more slowly, so keep `per_frame` low there. `viewer3d::hardware_tracing()`
+says which one you got, and `Viewer::render_traced(w, h)` renders a still at
+any size with every sample taken.
+
 ### `update` - GitHub release updates (feature `update`)
 
 An `Updater` per repo asks `/releases/latest` on a thread, compares the tag with

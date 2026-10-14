@@ -41,6 +41,10 @@ eframe = { version = "0.35", default-features = false, features = [
 name = "viewer3d"
 required-features = ["viewer3d"]
 
+[[test]]
+name = "trace"
+required-features = ["viewer3d"]
+
 [[example]]
 name = "gallery"
 

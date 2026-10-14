@@ -1,16 +1,21 @@
-use super::{Image, Look, Material, Scene, Style, V3, View, Viewer, dot, rgb, sub};
+use super::trace::{self, Frame, Piece, Shot, Target, Traced, Tracer};
+use super::{
+    Camera, Cut, Image, Look, Material, Painted, Scene, Style, Trace, V3, View, Viewer, dot, rgb,
+    sub, to_linear,
+};
 use bytemuck::{Pod, Zeroable};
-use egui::{Color32, Rect, TextureHandle, TextureOptions, Ui};
+use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, Ui};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use web_time::{Duration, Instant};
 
-const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const SAMPLES: u32 = 4;
+pub(super) const COLOUR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub(super) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(super) const SAMPLES: u32 = 4;
 const STRIDE: u64 = 256;
+const SETTLE: u32 = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -19,7 +24,10 @@ struct FrameUniform {
     eye: [f32; 4],
     key: [f32; 4],
     fill: [f32; 4],
-    lighting: [f32; 4],
+    key_radiance: [f32; 4],
+    fill_radiance: [f32; 4],
+    sky: [f32; 4],
+    ground: [f32; 4],
     cap: [f32; 4],
     clip: [f32; 4],
     viewport: [f32; 4],
@@ -43,6 +51,7 @@ struct Vertex {
     normal: [f32; 3],
     colour: [f32; 3],
     uv: [f32; 2],
+    pad: f32,
 }
 
 type Aabb = (V3, V3);
@@ -51,7 +60,7 @@ struct Batch {
     group: usize,
     shading: super::Shading,
     texture: Option<usize>,
-    vertices: wgpu::Buffer,
+    first: u32,
     count: u32,
     aabb: Aabb,
 }
@@ -69,22 +78,41 @@ struct Stroke {
 struct Uploaded {
     used: u64,
     textures: Vec<wgpu::BindGroup>,
+    vertices: wgpu::Buffer,
     batches: Vec<Batch>,
     strokes: Vec<Stroke>,
+    traced: Option<Traced>,
 }
 
-struct Slot {
-    used: u64,
+#[derive(Clone, PartialEq)]
+struct Snapshot {
+    scene: u64,
+    camera: Camera,
+    looks: Vec<Look>,
+    cut: Option<Cut>,
+    style: Style,
+    trace: Trace,
+}
+
+struct Canvas {
     size: [u32; 2],
-    resolved: wgpu::TextureView,
+    resolved: wgpu::Texture,
+    resolved_view: wgpu::TextureView,
     multisampled: wgpu::TextureView,
     depth: wgpu::TextureView,
-    texture: egui::TextureId,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     draws: wgpu::Buffer,
     draw_group: wgpu::BindGroup,
     capacity: u64,
+    target: Option<Target>,
+    last: Option<Snapshot>,
+}
+
+struct Slot {
+    used: u64,
+    texture: egui::TextureId,
+    canvas: Option<Canvas>,
 }
 
 struct Pipelines {
@@ -94,7 +122,7 @@ struct Pipelines {
     surface_layout: wgpu::PipelineLayout,
     line_layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
-    surfaces: HashMap<(bool, i32), wgpu::RenderPipeline>,
+    surfaces: HashMap<(bool, i32, bool), wgpu::RenderPipeline>,
     lines: HashMap<bool, wgpu::RenderPipeline>,
 }
 
@@ -104,6 +132,7 @@ struct State {
     renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
     anisotropic: bool,
     pipelines: Pipelines,
+    tracer: Option<Tracer>,
     blank: wgpu::BindGroup,
     scenes: HashMap<u64, Uploaded>,
     slots: Vec<Slot>,
@@ -130,6 +159,25 @@ pub fn draw_time() -> Duration {
     Duration::from_micros(DRAW_MICROS.load(Ordering::Relaxed))
 }
 
+pub fn wgpu_setup() -> egui_wgpu::WgpuSetup {
+    let base = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    let plain = base.device_descriptor.clone();
+    egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
+        device_descriptor: Arc::new(move |adapter| {
+            let mut descriptor = plain(adapter);
+            if adapter.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) {
+                descriptor.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+                descriptor.required_limits = descriptor
+                    .required_limits
+                    .using_acceleration_structure_values(adapter.limits());
+                descriptor.experimental_features = unsafe { wgpu::ExperimentalFeatures::enabled() };
+            }
+            descriptor
+        }),
+        ..base
+    })
+}
+
 pub fn install(render_state: &egui_wgpu::RenderState) {
     let device = render_state.device.clone();
     let anisotropic = render_state
@@ -138,6 +186,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
         .flags
         .contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING);
     let pipelines = Pipelines::new(&device);
+    let tracer = trace::supported(&device, &render_state.adapter).then(|| Tracer::new(&device));
     let blank = texture_group(
         &device,
         &render_state.queue,
@@ -151,6 +200,7 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
             renderer: render_state.renderer.clone(),
             anisotropic,
             pipelines,
+            tracer,
             blank,
             scenes: HashMap::new(),
             slots: Vec::new(),
@@ -165,6 +215,12 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
 
 pub fn installed() -> bool {
     STATE.with(|cell| cell.borrow().is_some())
+}
+
+pub fn hardware_tracing() -> bool {
+    STATE.with(|cell| {
+        cell.borrow().as_ref().and_then(|s| s.tracer.as_ref()).is_some_and(|t| t.hardware)
+    })
 }
 
 fn uniform_entry(binding: u32, dynamic: bool) -> wgpu::BindGroupLayoutEntry {
@@ -242,9 +298,10 @@ impl Pipelines {
         device: &wgpu::Device,
         see_through: bool,
         bias: i32,
+        depth_only: bool,
     ) -> &wgpu::RenderPipeline {
         let (layout, module) = (&self.surface_layout, &self.module);
-        self.surfaces.entry((see_through, bias)).or_insert_with(|| {
+        self.surfaces.entry((see_through, bias, depth_only)).or_insert_with(|| {
             let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2];
             pipeline(
                 device,
@@ -258,6 +315,7 @@ impl Pipelines {
                 },
                 see_through,
                 wgpu::DepthBiasState { constant: 1, slope_scale: bias as f32 / 100.0, clamp: 0.0 },
+                if depth_only { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
             )
         })
     }
@@ -278,11 +336,13 @@ impl Pipelines {
                 },
                 see_through,
                 wgpu::DepthBiasState::default(),
+                wgpu::ColorWrites::ALL,
             )
         })
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -291,6 +351,7 @@ fn pipeline(
     buffer: wgpu::VertexBufferLayout,
     see_through: bool,
     bias: wgpu::DepthBiasState,
+    write_mask: wgpu::ColorWrites,
 ) -> wgpu::RenderPipeline {
     let blend = see_through.then_some(wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -317,11 +378,7 @@ fn pipeline(
             module,
             entry_point: Some(fragment),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: COLOUR,
-                blend,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &[Some(wgpu::ColorTargetState { format: COLOUR, blend, write_mask })],
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -440,8 +497,8 @@ fn texture_group(
     })
 }
 
-fn to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+fn four(v: V3, w: f32) -> [f32; 4] {
+    [v[0], v[1], v[2], w]
 }
 
 fn grow(aabb: &mut Aabb, p: V3) {
@@ -462,6 +519,36 @@ fn vertex_buffer(state: &State, label: &str, bytes: &[u8]) -> wgpu::Buffer {
     buffer
 }
 
+struct Gathered<M> {
+    key: (usize, M, Option<usize>),
+    vertices: Vec<Vertex>,
+    aabb: Aabb,
+}
+
+fn gather<M: Material>(scene: &Scene<M>, textures: usize) -> Vec<Gathered<M>> {
+    let mut out: Vec<Gathered<M>> = Vec::new();
+    for s in scene.surfaces.iter().filter(|s| s.positions.len() >= 3) {
+        let key = (s.group, s.material, s.texture.filter(|t| *t < textures));
+        let at = out.iter().position(|g| g.key == key).unwrap_or_else(|| {
+            out.push(Gathered { key, vertices: Vec::new(), aabb: EMPTY });
+            out.len() - 1
+        });
+        let colour = s.colour.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
+        let g = &mut out[at];
+        for (i, p) in s.positions.iter().take(s.positions.len() / 3 * 3).enumerate() {
+            grow(&mut g.aabb, *p);
+            g.vertices.push(Vertex {
+                position: *p,
+                normal: s.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]),
+                colour,
+                uv: s.uvs.get(i).copied().unwrap_or_default(),
+                pad: 0.0,
+            });
+        }
+    }
+    out
+}
+
 fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
     let device = &state.device;
     let textures: Vec<wgpu::BindGroup> = scene
@@ -477,39 +564,36 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
             )
         })
         .collect();
-    let mut keys: Vec<(usize, M, Option<usize>)> = Vec::new();
-    let mut meshes: Vec<(Vec<Vertex>, Aabb)> = Vec::new();
-    for s in scene.surfaces.iter().filter(|s| !s.positions.is_empty()) {
-        let key = (s.group, s.material, s.texture.filter(|t| *t < textures.len()));
-        let at = keys.iter().position(|k| *k == key).unwrap_or_else(|| {
-            keys.push(key);
-            meshes.push((Vec::new(), EMPTY));
-            keys.len() - 1
-        });
-        let colour = s.colour.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
-        let (vertices, aabb) = &mut meshes[at];
-        for (i, p) in s.positions.iter().enumerate() {
-            grow(aabb, *p);
-            vertices.push(Vertex {
-                position: *p,
-                normal: s.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]),
-                colour,
-                uv: s.uvs.get(i).copied().unwrap_or_default(),
-            });
-        }
-    }
-    let batches = keys
-        .into_iter()
-        .zip(meshes)
-        .map(|((group, material, texture), (vertices, aabb))| Batch {
+    let gathered = gather(scene, textures.len());
+    let mut all: Vec<Vertex> = Vec::new();
+    let mut batches = Vec::with_capacity(gathered.len());
+    for g in gathered {
+        let (group, material, texture) = g.key;
+        batches.push(Batch {
             group,
             shading: material.shading(),
             texture,
-            count: vertices.len() as u32,
-            vertices: vertex_buffer(state, "viewer3d surface", bytemuck::cast_slice(&vertices)),
-            aabb,
-        })
-        .collect();
+            first: all.len() as u32,
+            count: g.vertices.len() as u32,
+            aabb: g.aabb,
+        });
+        all.extend(g.vertices);
+    }
+    let mut usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+    if let Some(tracer) = &state.tracer {
+        usage |= wgpu::BufferUsages::STORAGE;
+        if tracer.hardware {
+            usage |= wgpu::BufferUsages::BLAS_INPUT;
+        }
+    }
+    let bytes: &[u8] = bytemuck::cast_slice(&all);
+    let vertices = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("viewer3d surfaces"),
+        size: (bytes.len() as u64).next_multiple_of(16).max(48),
+        usage,
+        mapped_at_creation: false,
+    });
+    state.queue.write_buffer(&vertices, 0, bytes);
     let strokes = scene
         .lines
         .iter()
@@ -531,10 +615,43 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
             }
         })
         .collect();
-    Uploaded { used: 0, textures, batches, strokes }
+    Uploaded { used: 0, textures, vertices, batches, strokes, traced: None }
 }
 
-fn columns(m: &[f32; 16]) -> [[f32; 4]; 4] {
+fn trace_scene<M: Material>(
+    state: &State,
+    tracer: &Tracer,
+    scene: &Scene<M>,
+    uploaded: &Uploaded,
+) -> Traced {
+    let gathered = gather(scene, uploaded.textures.len());
+    let triangles: Vec<Vec<[V3; 3]>> = gathered
+        .iter()
+        .map(|g| {
+            g.vertices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [t[0].position, t[1].position, t[2].position])
+                .collect()
+        })
+        .collect();
+    let pieces: Vec<Piece> = uploaded
+        .batches
+        .iter()
+        .zip(&triangles)
+        .map(|(b, triangles)| Piece {
+            first: b.first,
+            count: b.count,
+            texture: b.texture,
+            shading: b.shading,
+            triangles,
+        })
+        .collect();
+    Traced::new(tracer, &state.device, &state.queue, &uploaded.vertices, &pieces, &scene.images)
+}
+
+pub(super) fn columns(m: &[f32; 16]) -> [[f32; 4]; 4] {
     [
         [m[0], m[1], m[2], m[3]],
         [m[4], m[5], m[6], m[7]],
@@ -543,7 +660,7 @@ fn columns(m: &[f32; 16]) -> [[f32; 4]; 4] {
     ]
 }
 
-fn normal_matrix(m: &[f32; 16]) -> [[f32; 4]; 4] {
+pub(super) fn normal_matrix(m: &[f32; 16]) -> [[f32; 4]; 4] {
     let a = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]];
     let cof = |r: usize, c: usize| {
         let (r0, r1) = ((r + 1) % 3, (r + 2) % 3);
@@ -627,71 +744,89 @@ impl State {
         });
     }
 
-    fn slot(&mut self, size: [u32; 2], draws: u64) -> usize {
+    fn canvas(&self, size: [u32; 2]) -> Canvas {
+        let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
+        let make = |label, format, samples, usage| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let resolved = make(
+            "viewer3d resolved",
+            COLOUR,
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let multisampled =
+            make("viewer3d multisampled", COLOUR, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = make("viewer3d depth", DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let frame = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("viewer3d frame"),
+            size: std::mem::size_of::<FrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let frame_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("viewer3d frame"),
+            layout: &self.pipelines.frame_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() }],
+        });
+        let (draws, draw_group) = self.draw_buffer(16);
+        Canvas {
+            size,
+            resolved_view: resolved.create_view(&Default::default()),
+            resolved,
+            multisampled: multisampled.create_view(&Default::default()),
+            depth: depth.create_view(&Default::default()),
+            frame,
+            frame_group,
+            draws,
+            draw_group,
+            capacity: 16,
+            target: None,
+            last: None,
+        }
+    }
+
+    fn slot(&mut self, size: [u32; 2]) -> usize {
         let index = self.next;
         self.next += 1;
-        let fits = self.slots.get(index).is_some_and(|s| s.size == size);
+        let fits = self
+            .slots
+            .get(index)
+            .is_some_and(|s| s.canvas.as_ref().is_some_and(|c| c.size == size));
         if !fits {
-            let (resolved, multisampled, depth) = self.targets(size);
+            let canvas = self.canvas(size);
             let mut renderer = self.renderer.write();
             match self.slots.get_mut(index) {
                 Some(slot) => {
                     renderer.update_egui_texture_from_wgpu_texture(
                         &self.device,
-                        &resolved,
+                        &canvas.resolved_view,
                         wgpu::FilterMode::Nearest,
                         slot.texture,
                     );
-                    slot.size = size;
-                    slot.resolved = resolved;
-                    slot.multisampled = multisampled;
-                    slot.depth = depth;
+                    slot.canvas = Some(canvas);
                 }
                 None => {
                     let texture = renderer.register_native_texture(
                         &self.device,
-                        &resolved,
+                        &canvas.resolved_view,
                         wgpu::FilterMode::Nearest,
                     );
                     drop(renderer);
-                    let frame = self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("viewer3d frame"),
-                        size: std::mem::size_of::<FrameUniform>() as u64,
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                    let frame_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("viewer3d frame"),
-                        layout: &self.pipelines.frame_layout,
-                        entries: &[wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: frame.as_entire_binding(),
-                        }],
-                    });
-                    let (draws, draw_group) = self.draw_buffer(16);
-                    self.slots.push(Slot {
-                        used: self.painted,
-                        size,
-                        resolved,
-                        multisampled,
-                        depth,
-                        texture,
-                        frame,
-                        frame_group,
-                        draws,
-                        draw_group,
-                        capacity: 16,
-                    });
+                    self.slots.push(Slot { used: self.painted, texture, canvas: Some(canvas) });
                 }
             }
-        }
-        if self.slots[index].capacity < draws {
-            let capacity = draws.next_power_of_two();
-            let (buffer, group) = self.draw_buffer(capacity);
-            let slot = &mut self.slots[index];
-            slot.draws = buffer;
-            slot.draw_group = group;
-            slot.capacity = capacity;
         }
         self.slots[index].used = self.painted;
         index
@@ -719,32 +854,23 @@ impl State {
         (buffer, group)
     }
 
-    fn targets(&self, size: [u32; 2]) -> (wgpu::TextureView, wgpu::TextureView, wgpu::TextureView) {
-        let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
-        let make = |label, format, samples, usage| {
-            self.device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
-        };
-        (
-            make(
-                "viewer3d resolved",
-                COLOUR,
-                1,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            ),
-            make("viewer3d multisampled", COLOUR, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT),
-            make("viewer3d depth", DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT),
-        )
+    fn prepare<M: Material>(&mut self, viewer: &Viewer<M>, traced: bool) {
+        let scene = &viewer.scene;
+        if !self.scenes.contains_key(&scene.id) {
+            let uploaded = upload(self, scene);
+            self.scenes.insert(scene.id, uploaded);
+            self.uploads += 1;
+        }
+        let uploaded = &self.scenes[&scene.id];
+        if traced
+            && uploaded.traced.is_none()
+            && !uploaded.batches.is_empty()
+            && let Some(tracer) = &self.tracer
+        {
+            let made = trace_scene(self, tracer, scene, uploaded);
+            self.scenes.get_mut(&scene.id).expect("uploaded").traced = Some(made);
+        }
+        self.scenes.get_mut(&scene.id).expect("uploaded").used = self.painted;
     }
 }
 
@@ -759,19 +885,37 @@ struct Item {
     distance: f32,
 }
 
-fn render<M: Material>(
+enum Mode {
+    Raster,
+    Live(Trace),
+    Offline(Trace),
+}
+
+fn tracing(state: &State, viewer: &Viewer<impl Material>, mode: &Mode) -> Option<Trace> {
+    let trace = match mode {
+        Mode::Raster => None,
+        Mode::Live(t) | Mode::Offline(t) => Some(*t),
+    }?;
+    let uploaded = state.scenes.get(&viewer.scene.id)?;
+    (state.tracer.is_some() && uploaded.traced.is_some()).then_some(Trace {
+        samples: trace.samples.max(1),
+        per_frame: trace.per_frame.max(1),
+        bounces: trace.bounces.max(1),
+    })
+}
+
+fn draw<M: Material>(
     state: &mut State,
+    canvas: &mut Canvas,
     viewer: &Viewer<M>,
-    size: [u32; 2],
     ppp: f32,
-) -> egui::TextureId {
+    mode: Mode,
+) -> Painted {
+    let wants = !matches!(mode, Mode::Raster);
+    state.prepare(viewer, wants);
+    let trace = tracing(state, viewer, &mode);
+    let size = canvas.size;
     let scene = &viewer.scene;
-    if !state.scenes.contains_key(&scene.id) {
-        let uploaded = upload(state, scene);
-        state.scenes.insert(scene.id, uploaded);
-        state.uploads += 1;
-    }
-    let used = state.painted;
     let style: Style = viewer.style;
     let vw = viewer.view(egui::Vec2::new(size[0] as f32, size[1] as f32));
     let selected = rgb(style.selected);
@@ -779,8 +923,7 @@ fn render<M: Material>(
     let mut items: Vec<Item> = Vec::new();
     let mut corners: Vec<[V3; 8]> = Vec::new();
     let mut widest: f32 = 0.0;
-    let uploaded = state.scenes.get_mut(&scene.id).expect("uploaded above");
-    uploaded.used = used;
+    let uploaded = &state.scenes[&scene.id];
     let distance = |box_: &[V3; 8]| {
         let centre = box_
             .iter()
@@ -843,12 +986,16 @@ fn render<M: Material>(
     }
     let (near, far) = depth_range(&corners, &vw, viewer.camera.ortho);
     let clip = viewer.cut.map(|c| [c.normal[0], c.normal[1], c.normal[2], c.offset]);
+    let lighting = &style.lighting;
     let frame = FrameUniform {
         view_proj: view_projection(&vw, size, viewer.camera.ortho, near, far),
         eye: [vw.eye[0], vw.eye[1], vw.eye[2], 1.0],
-        key: [vw.key[0], vw.key[1], vw.key[2], 0.0],
-        fill: [vw.fill[0], vw.fill[1], vw.fill[2], 0.0],
-        lighting: [style.ambient, style.key, style.fill, 0.0],
+        key: four(lighting.direction(&lighting.key, &vw), lighting.exposure),
+        fill: four(lighting.direction(&lighting.fill, &vw), 0.0),
+        key_radiance: four(lighting.key.radiance(), 0.0),
+        fill_radiance: four(lighting.fill.radiance(), 0.0),
+        sky: four(lighting.sky(), 0.0),
+        ground: four(lighting.ground(), 0.0),
         cap: {
             let c = rgb(style.cap);
             [c[0], c[1], c[2], 1.0]
@@ -857,42 +1004,133 @@ fn render<M: Material>(
         viewport: [size[0] as f32, size[1] as f32, if clip.is_some() { 1.0 } else { 0.0 }, 0.0],
     };
     let bias = ((widest * 0.5 + 1.0) * 100.0).round() as i32;
-    let index = state.slot(size, draws.len() as u64);
+    if canvas.capacity < draws.len() as u64 {
+        let capacity = (draws.len() as u64).next_power_of_two();
+        let (buffer, group) = state.draw_buffer(capacity);
+        canvas.draws = buffer;
+        canvas.draw_group = group;
+        canvas.capacity = capacity;
+    }
+    let device = state.device.clone();
+    let queue = state.queue.clone();
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut painted = Painted {
+        hardware: state.tracer.as_ref().is_some_and(|t| t.hardware),
+        ..Painted::default()
+    };
+    let mut present = None;
+    if let Some(trace) = trace {
+        let snapshot = Snapshot {
+            scene: scene.id,
+            camera: viewer.camera,
+            looks: viewer.looks.to_vec(),
+            cut: viewer.cut,
+            style,
+            trace,
+        };
+        if canvas.target.as_ref().is_none_or(|t| t.size() != size) {
+            canvas.target = Some(Target::new(&device, size));
+            canvas.last = None;
+        }
+        let target = canvas.target.as_mut().expect("made above");
+        let offline = matches!(mode, Mode::Offline(_));
+        let moved = canvas.last.as_ref() != Some(&snapshot);
+        if moved {
+            canvas.last = Some(snapshot);
+            target.samples = 0;
+            target.stamp = target.stamp.wrapping_add(1);
+        }
+        let tracer = state.tracer.as_ref().expect("tracing");
+        let Uploaded { vertices, batches, traced, .. } =
+            state.scenes.get_mut(&scene.id).expect("uploaded");
+        let traced = traced.as_mut().expect("traced");
+        let looks: Vec<Look> = batches.iter().map(|b| viewer.look(b.group)).collect();
+        let shot = Shot {
+            view: &vw,
+            ortho: viewer.camera.ortho,
+            style: &style,
+            cut: viewer.cut,
+            trace,
+            radius: scene.radius,
+            size,
+            instances: looks.len() as u32,
+        };
+        let frame_data = Frame { looks, style: &style, vertices };
+        if offline {
+            while target.samples < trace.samples {
+                let count = trace.per_frame.min(trace.samples - target.samples);
+                let mut chunk = device.create_command_encoder(&Default::default());
+                tracer.dispatch(
+                    &device,
+                    &queue,
+                    &mut chunk,
+                    traced,
+                    &frame_data,
+                    target,
+                    &shot,
+                    count,
+                );
+                queue.submit([chunk.finish()]);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            }
+        } else if !moved && target.samples < trace.samples {
+            let count = trace.per_frame.min(trace.samples - target.samples);
+            tracer.dispatch(
+                &device,
+                &queue,
+                &mut encoder,
+                traced,
+                &frame_data,
+                target,
+                &shot,
+                count,
+            );
+        }
+        painted.target = trace.samples;
+        if target.samples >= SETTLE.min(trace.samples) {
+            painted.samples = target.samples;
+            present = Some(tracer.present_group(&device, &queue, target));
+        }
+    } else {
+        canvas.target = None;
+        canvas.last = None;
+    }
+    let uploaded = &state.scenes[&scene.id];
     let mut order: Vec<usize> = (0..items.len()).filter(|i| !items[*i].see_through).collect();
     let mut behind: Vec<usize> = (0..items.len()).filter(|i| items[*i].see_through).collect();
     behind.sort_by(|a, b| items[*b].distance.total_cmp(&items[*a].distance));
     order.extend(behind);
-    let device = state.device.clone();
+    if present.is_some() {
+        order.retain(|i| matches!(items[*i].kind, Kind::Stroke(_)) || !items[*i].see_through);
+    }
+    let depth_only = present.is_some();
     for item in &items {
         match item.kind {
             Kind::Batch(_) => {
-                state.pipelines.surface(&device, item.see_through, bias);
+                state.pipelines.surface(&device, item.see_through, bias, depth_only);
             }
             Kind::Stroke(_) => {
                 state.pipelines.line(&device, item.see_through);
             }
         }
     }
-    let slot = &state.slots[index];
-    state.queue.write_buffer(&slot.frame, 0, bytemuck::bytes_of(&frame));
+    queue.write_buffer(&canvas.frame, 0, bytemuck::bytes_of(&frame));
     let mut packed = vec![0u8; draws.len() * STRIDE as usize];
     for (k, d) in draws.iter().enumerate() {
         let at = k * STRIDE as usize;
         packed[at..at + std::mem::size_of::<DrawUniform>()].copy_from_slice(bytemuck::bytes_of(d));
     }
     if !packed.is_empty() {
-        state.queue.write_buffer(&slot.draws, 0, &packed);
+        queue.write_buffer(&canvas.draws, 0, &packed);
     }
     let [r, g, b] = rgb(style.background);
-    let uploaded = &state.scenes[&scene.id];
-    let mut encoder = device.create_command_encoder(&Default::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("viewer3d"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &slot.multisampled,
+                view: &canvas.multisampled,
                 depth_slice: None,
-                resolve_target: Some(&slot.resolved),
+                resolve_target: Some(&canvas.resolved_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: r as f64,
@@ -904,7 +1142,7 @@ fn render<M: Material>(
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &slot.depth,
+                view: &canvas.depth,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Discard,
@@ -915,11 +1153,16 @@ fn render<M: Material>(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(0, &slot.frame_group, &[]);
+        if let (Some(group), Some(tracer)) = (&present, &state.tracer) {
+            pass.set_pipeline(&tracer.present);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        pass.set_bind_group(0, &canvas.frame_group, &[]);
         for i in order {
             let item = &items[i];
             let offset = (i as u64 * STRIDE) as u32;
-            pass.set_bind_group(1, &slot.draw_group, &[offset]);
+            pass.set_bind_group(1, &canvas.draw_group, &[offset]);
             match item.kind {
                 Kind::Batch(b) => {
                     let batch = &uploaded.batches[b];
@@ -927,10 +1170,11 @@ fn render<M: Material>(
                         .texture
                         .and_then(|t| uploaded.textures.get(t))
                         .unwrap_or(&state.blank);
-                    pass.set_pipeline(&state.pipelines.surfaces[&(item.see_through, bias)]);
+                    let key = (item.see_through, bias, depth_only);
+                    pass.set_pipeline(&state.pipelines.surfaces[&key]);
                     pass.set_bind_group(2, group, &[]);
-                    pass.set_vertex_buffer(0, batch.vertices.slice(..));
-                    pass.draw(0..batch.count, 0..1);
+                    pass.set_vertex_buffer(0, uploaded.vertices.slice(..));
+                    pass.draw(batch.first..batch.first + batch.count, 0..1);
                 }
                 Kind::Stroke(s) => {
                     let stroke = &uploaded.strokes[s];
@@ -941,8 +1185,84 @@ fn render<M: Material>(
             }
         }
     }
+    queue.submit([encoder.finish()]);
+    painted
+}
+
+fn render<M: Material>(
+    state: &mut State,
+    viewer: &Viewer<M>,
+    size: [u32; 2],
+    ppp: f32,
+) -> (egui::TextureId, Painted) {
+    let index = state.slot(size);
+    let mut canvas = state.slots[index].canvas.take().expect("slot canvas");
+    let mode = viewer.trace.map_or(Mode::Raster, Mode::Live);
+    let painted = draw(state, &mut canvas, viewer, ppp, mode);
+    state.slots[index].canvas = Some(canvas);
+    (state.slots[index].texture, painted)
+}
+
+pub(super) fn render_traced<M: Material>(
+    viewer: &Viewer<M>,
+    width: usize,
+    height: usize,
+) -> Option<ColorImage> {
+    STATE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let state = slot.as_mut()?;
+        state.tracer.as_ref()?;
+        let size = [width.max(1) as u32, height.max(1) as u32];
+        let mut canvas = state.canvas(size);
+        let trace = viewer.trace.unwrap_or_default();
+        let painted = draw(state, &mut canvas, viewer, 1.0, Mode::Offline(trace));
+        if !painted.traced() && !viewer.scene.surfaces.is_empty() {
+            return None;
+        }
+        Some(read_back(state, &canvas))
+    })
+}
+
+fn read_back(state: &State, canvas: &Canvas) -> ColorImage {
+    let [w, h] = canvas.size;
+    let row = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("viewer3d read back"),
+        size: row as u64 * h as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = state.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        canvas.resolved.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
     state.queue.submit([encoder.finish()]);
-    slot.texture
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    let _ = state.device.poll(wgpu::PollType::wait_indefinitely());
+    let data = slice.get_mapped_range();
+    let pixels = (0..h as usize)
+        .flat_map(|y| {
+            let line = &data[y * row as usize..][..w as usize * 4];
+            line.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    drop(data);
+    buffer.unmap();
+    ColorImage::new([w as usize, h as usize], pixels)
 }
 
 fn soft<M: Material>(ui: &Ui, rect: Rect, viewer: &Viewer<M>, size: [u32; 2]) -> egui::TextureId {
@@ -970,7 +1290,7 @@ fn soft<M: Material>(ui: &Ui, rect: Rect, viewer: &Viewer<M>, size: [u32; 2]) ->
     })
 }
 
-pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: &Viewer<M>) {
+pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: &Viewer<M>) -> Painted {
     let started = Instant::now();
     let ppp = ui.ctx().pixels_per_point();
     let size = [
@@ -978,16 +1298,21 @@ pub(super) fn paint<M: Material>(ui: &Ui, rect: Rect, viewer: &Viewer<M>) {
         (rect.height() * ppp).round().max(1.0) as u32,
     ];
     let pass = ui.ctx().cumulative_pass_nr();
-    let texture = STATE.with(|cell| {
+    let drawn = STATE.with(|cell| {
         let mut slot = cell.borrow_mut();
         let state = slot.as_mut()?;
         state.begin(pass);
         Some(render(state, viewer, size, ppp))
     });
-    let texture = texture.unwrap_or_else(|| soft(ui, rect, viewer, size));
+    let (texture, painted) =
+        drawn.unwrap_or_else(|| (soft(ui, rect, viewer, size), Painted::default()));
+    if painted.target > 0 && !painted.settled() {
+        ui.ctx().request_repaint();
+    }
     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     ui.painter_at(rect).image(texture, rect, uv, Color32::WHITE);
     DRAW_MICROS.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+    painted
 }
 
 #[cfg(test)]

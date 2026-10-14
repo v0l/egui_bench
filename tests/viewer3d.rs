@@ -102,7 +102,9 @@ fn rendered(viewer: Viewer<Finish>) -> ColorImage {
         .with_size(size)
         .with_pixels_per_point(1.0)
         .renderer(WgpuTestRenderer::from_render_state(state))
-        .build_ui(move |ui| viewer.paint(ui, rect));
+        .build_ui(move |ui| {
+            viewer.paint(ui, rect);
+        });
     harness.run();
     let image = harness.render().expect("rendered");
     let pixels =

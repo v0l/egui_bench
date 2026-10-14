@@ -1,12 +1,15 @@
+mod controls;
 mod gpu;
 mod soft;
+mod trace;
 
 use egui::{Color32, ColorImage, Pos2, Rect, Response, Ui, Vec2};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use gpu::{draw_time, install, installed};
+pub use controls::{lighting_controls, trace_controls};
+pub use gpu::{draw_time, hardware_tracing, install, installed, wgpu_setup};
 
 pub type V3 = [f32; 3];
 pub type Placement = [f32; 16];
@@ -138,12 +141,124 @@ impl Look {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Light {
+    pub azimuth: f32,
+    pub elevation: f32,
+    pub intensity: f32,
+    pub colour: Color32,
+    pub spread: f32,
+}
+
+impl Light {
+    pub const KEY: Light = Light {
+        azimuth: -0.436_6,
+        elevation: 0.586_6,
+        intensity: 0.78,
+        colour: Color32::WHITE,
+        spread: 0.05,
+    };
+    pub const FILL: Light = Light {
+        azimuth: 0.602_2,
+        elevation: -0.252_0,
+        intensity: 0.25,
+        colour: Color32::WHITE,
+        spread: 0.3,
+    };
+
+    pub fn radiance(&self) -> V3 {
+        rgb(self.colour).map(|c| to_linear(c) * self.intensity.max(0.0))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Lighting {
+    pub key: Light,
+    pub fill: Light,
+    pub ambient: f32,
+    pub sky: Color32,
+    pub ground: Color32,
+    pub exposure: f32,
+    pub follow: bool,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Lighting::STUDIO
+    }
+}
+
+impl Lighting {
+    pub const STUDIO: Lighting = Lighting {
+        key: Light::KEY,
+        fill: Light::FILL,
+        ambient: 0.32,
+        sky: Color32::WHITE,
+        ground: Color32::WHITE,
+        exposure: 1.0,
+        follow: true,
+    };
+
+    pub fn direction(&self, light: &Light, vw: &View) -> V3 {
+        let (sa, ca) = light.azimuth.sin_cos();
+        let (se, ce) = light.elevation.sin_cos();
+        if self.follow {
+            let back = scale(vw.forward, -1.0);
+            norm(add(add(scale(vw.right, ce * sa), scale(vw.up, se)), scale(back, ce * ca)))
+        } else {
+            [ce * ca, ce * sa, se]
+        }
+    }
+
+    pub fn sky(&self) -> V3 {
+        rgb(self.sky).map(|c| to_linear(c) * self.ambient.max(0.0))
+    }
+
+    pub fn ground(&self) -> V3 {
+        rgb(self.ground).map(|c| to_linear(c) * self.ambient.max(0.0))
+    }
+
+    pub fn environment(&self, n: V3) -> V3 {
+        let (sky, ground) = (self.sky(), self.ground());
+        let t = (n[2] * 0.5 + 0.5).clamp(0.0, 1.0);
+        [0, 1, 2].map(|k| ground[k] + (sky[k] - ground[k]) * t)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Trace {
+    pub samples: u32,
+    pub bounces: u32,
+    pub per_frame: u32,
+}
+
+impl Default for Trace {
+    fn default() -> Self {
+        Trace { samples: 256, bounces: 4, per_frame: 4 }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Painted {
+    pub samples: u32,
+    pub target: u32,
+    pub hardware: bool,
+}
+
+impl Painted {
+    pub fn traced(&self) -> bool {
+        self.samples > 0
+    }
+
+    pub fn settled(&self) -> bool {
+        self.target > 0 && self.samples >= self.target
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Style {
     pub background: Color32,
-    pub ambient: f32,
-    pub key: f32,
-    pub fill: f32,
+    pub lighting: Lighting,
     pub cap: Color32,
     pub selected: Color32,
     pub selected_tint: f32,
@@ -151,20 +266,26 @@ pub struct Style {
 
 impl Default for Style {
     fn default() -> Self {
-        Style {
-            background: BACKGROUND,
-            ambient: 0.32,
-            key: 0.78,
-            fill: 0.25,
-            cap: Color32::from_rgb(237, 140, 46),
-            selected: Color32::from_rgb(245, 166, 59),
-            selected_tint: 0.35,
-        }
+        Style::BENCH
     }
+}
+
+impl Style {
+    pub const BENCH: Style = Style {
+        background: BACKGROUND,
+        lighting: Lighting::STUDIO,
+        cap: Color32::from_rgb(237, 140, 46),
+        selected: Color32::from_rgb(245, 166, 59),
+        selected_tint: 0.35,
+    };
 }
 
 pub fn rgb(c: Color32) -> V3 {
     [c.r(), c.g(), c.b()].map(|v| v as f32 / 255.0)
+}
+
+fn to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
 pub fn add(a: V3, b: V3) -> V3 {
@@ -244,8 +365,6 @@ pub struct View {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
-    pub key: V3,
-    pub fill: V3,
 }
 
 pub fn view<M>(scene: &Scene<M>, cam: &Camera, size: Vec2) -> View {
@@ -259,7 +378,6 @@ pub fn view<M>(scene: &Scene<M>, cam: &Camera, size: Vec2) -> View {
     let focal = size.x.min(size.y) * 1.25 * cam.zoom;
     let target = add(scene.centre, cam.shift);
     let eye = add(target, scale(eye_dir, dist));
-    let back = scale(forward, -1.0);
     View {
         dist,
         focal,
@@ -271,8 +389,6 @@ pub fn view<M>(scene: &Scene<M>, cam: &Camera, size: Vec2) -> View {
         fov_y: 2.0 * (size.y * 0.5 / focal).atan(),
         near: dist * 0.02,
         far: dist * 10.0,
-        key: norm(add(add(scale(right, -0.35), scale(up, 0.55)), scale(back, 0.75))),
-        fill: norm(add(add(scale(right, 0.55), scale(up, -0.25)), scale(back, 0.8))),
     }
 }
 
@@ -414,11 +530,29 @@ pub struct Viewer<M: Material = ()> {
     looks: Arc<[Look]>,
     cut: Option<Cut>,
     style: Style,
+    trace: Option<Trace>,
 }
 
 impl<M: Material> Viewer<M> {
     pub fn new(scene: Arc<Scene<M>>, camera: Camera) -> Viewer<M> {
-        Viewer { scene, camera, looks: Arc::new([]), cut: None, style: Style::default() }
+        Viewer {
+            scene,
+            camera,
+            looks: Arc::new([]),
+            cut: None,
+            style: Style::default(),
+            trace: None,
+        }
+    }
+
+    pub fn lighting(mut self, lighting: Lighting) -> Viewer<M> {
+        self.style.lighting = lighting;
+        self
+    }
+
+    pub fn trace(mut self, trace: Option<Trace>) -> Viewer<M> {
+        self.trace = trace;
+        self
     }
 
     pub fn looks(mut self, looks: impl Into<Arc<[Look]>>) -> Viewer<M> {
@@ -509,8 +643,12 @@ impl<M: Material> Viewer<M> {
         self.camera != before
     }
 
-    pub fn paint(&self, ui: &Ui, rect: Rect) {
-        gpu::paint(ui, rect, self);
+    pub fn paint(&self, ui: &Ui, rect: Rect) -> Painted {
+        gpu::paint(ui, rect, self)
+    }
+
+    pub fn render_traced(&self, width: usize, height: usize) -> Option<ColorImage> {
+        gpu::render_traced(self, width, height)
     }
 
     pub fn render_soft(&self, width: usize, height: usize) -> ColorImage {
@@ -597,6 +735,23 @@ mod tests {
                 assert!((b.x - a.x - 600.0 / 1.15).abs() < 1.0e-2, "{}", b.x - a.x);
             }
         }
+    }
+
+    #[test]
+    fn the_studio_lights_sit_where_the_old_fixed_lights_did() {
+        let vw = view(&scene(), &Camera::default(), rect().size());
+        let l = Lighting::STUDIO;
+        let back = scale(vw.forward, -1.0);
+        let old = |r: f32, u: f32, b: f32| {
+            norm(add(add(scale(vw.right, r), scale(vw.up, u)), scale(back, b)))
+        };
+        for (light, want) in [(&l.key, old(-0.35, 0.55, 0.75)), (&l.fill, old(0.55, -0.25, 0.8))] {
+            let got = l.direction(light, &vw);
+            assert!(dot(got, want) > 0.99999, "{got:?} vs {want:?}");
+        }
+        let world = Lighting { follow: false, ..l };
+        let up = Light { elevation: std::f32::consts::FRAC_PI_2, ..Light::KEY };
+        assert!(world.direction(&up, &vw)[2] > 0.9999);
     }
 
     #[test]

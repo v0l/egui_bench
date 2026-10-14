@@ -3,7 +3,10 @@ struct Frame {
     eye: vec4<f32>,
     key: vec4<f32>,
     fill: vec4<f32>,
-    lighting: vec4<f32>,
+    key_radiance: vec4<f32>,
+    fill_radiance: vec4<f32>,
+    sky: vec4<f32>,
+    ground: vec4<f32>,
     cap: vec4<f32>,
     clip: vec4<f32>,
     viewport: vec4<f32>,
@@ -74,24 +77,31 @@ fn surface_fragment(in: SurfaceOut, @builtin(front_facing) front: bool) -> @loca
         albedo = to_linear(sampled);
     }
     albedo = mix(albedo, draw.tint.rgb, draw.tint.a);
-    let lighting = frame.lighting.xyz;
     let key = frame.key.xyz;
     let fill = frame.fill.xyz;
+    let exposure = frame.key.w;
     if frame.viewport.z > 0.5 && draw.gloss.w > 0.5 && draw.params.x > 0.999 && !front {
         let c = normalize(frame.clip.xyz);
-        let d = lighting.x + lighting.y * abs(dot(c, key)) + lighting.z * abs(dot(c, fill));
-        return vec4<f32>(to_srgb(to_linear(frame.cap.rgb) * d), 1.0);
+        let d = environment(c) + frame.key_radiance.rgb * abs(dot(c, key))
+            + frame.fill_radiance.rgb * abs(dot(c, fill));
+        return vec4<f32>(to_srgb(to_linear(frame.cap.rgb) * d * exposure), 1.0);
     }
     var n = normalize(in.nor);
     let v = normalize(frame.eye.xyz - in.pos);
     if dot(n, v) < 0.0 {
         n = -n;
     }
-    let d = lighting.x + lighting.y * max(dot(n, key), 0.0) + lighting.z * max(dot(n, fill), 0.0);
+    let d = environment(n) + frame.key_radiance.rgb * max(dot(n, key), 0.0)
+        + frame.fill_radiance.rgb * max(dot(n, fill), 0.0);
     let h = normalize(key + v);
     let sp = draw.gloss.x * pow(max(dot(n, h), 1.0e-6), draw.gloss.y);
     let shine = vec3<f32>(1.0) + (albedo * 1.6 - vec3<f32>(1.0)) * draw.gloss.z;
-    return vec4<f32>(to_srgb(albedo * d + sp * shine), draw.params.x);
+    let lit = (albedo * d + sp * shine * frame.key_radiance.rgb) * exposure;
+    return vec4<f32>(to_srgb(lit), draw.params.x);
+}
+
+fn environment(n: vec3<f32>) -> vec3<f32> {
+    return mix(frame.ground.rgb, frame.sky.rgb, clamp(n.z * 0.5 + 0.5, 0.0, 1.0));
 }
 
 struct LineIn {

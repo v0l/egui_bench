@@ -1,6 +1,7 @@
 use egui_bench::prelude::*;
 use egui_bench::viewer3d::{
-    Camera, Cut, Lines, Look, Material, Orbit, Scene, Shading, Surface, V3, Viewer,
+    self, Camera, Cut, Lighting, Lines, Look, Material, Orbit, Painted, Scene, Shading, Surface,
+    Trace, V3, Viewer,
 };
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -130,6 +131,10 @@ struct Demo {
     cut: Option<f32>,
     selected: Option<usize>,
     soft: bool,
+    lighting: Lighting,
+    trace: Trace,
+    traced: bool,
+    painted: Painted,
 }
 
 impl eframe::App for Demo {
@@ -151,7 +156,27 @@ impl eframe::App for Demo {
                 if toggle(ui, "software", self.soft).clicked() {
                     self.soft = !self.soft;
                 }
+                if toggle(ui, "ray traced", self.traced).clicked() {
+                    self.traced = !self.traced;
+                }
+                if self.traced {
+                    let p = self.painted;
+                    let engine = if p.hardware { "ray query" } else { "compute" };
+                    let state = if p.traced() {
+                        format!("{engine}: {} / {} samples", p.samples, p.target)
+                    } else {
+                        format!("{engine}: settling")
+                    };
+                    ui.label(legend(state));
+                }
             });
+        });
+        egui::Panel::right("lighting").show(ui, |ui| {
+            ui.add_space(6.0);
+            viewer3d::lighting_controls(ui, &mut self.lighting);
+            ui.add_space(10.0);
+            ui.label(legend("ray tracing"));
+            viewer3d::trace_controls(ui, &mut self.trace);
         });
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.max_rect();
@@ -164,7 +189,11 @@ impl eframe::App for Demo {
                 })
                 .collect();
             let cut = self.cut.map(|offset| Cut { normal: [0.0, -1.0, 0.0], offset });
-            let mut viewer = Viewer::new(self.scene.clone(), self.camera).looks(looks).cut(cut);
+            let mut viewer = Viewer::new(self.scene.clone(), self.camera)
+                .looks(looks)
+                .cut(cut)
+                .lighting(self.lighting)
+                .trace(self.traced.then_some(self.trace));
             viewer.navigate(ui, &response, &mut self.orbit);
             if response.double_clicked() {
                 self.camera = Camera { ortho: self.camera.ortho, ..Camera::default() };
@@ -191,7 +220,7 @@ impl eframe::App for Demo {
                     egui::Color32::WHITE,
                 );
             } else {
-                viewer.paint(ui, rect);
+                self.painted = viewer.paint(ui, rect);
             }
             ui.painter().text(
                 rect.left_bottom() + egui::vec2(10.0, -10.0),
@@ -206,7 +235,11 @@ impl eframe::App for Demo {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 760.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 820.0]),
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            wgpu_setup: viewer3d::wgpu_setup(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(
@@ -225,6 +258,10 @@ fn main() -> eframe::Result<()> {
                 cut: None,
                 selected: None,
                 soft: false,
+                lighting: Lighting::STUDIO,
+                trace: Trace::default(),
+                traced: false,
+                painted: Painted::default(),
             }))
         }),
     )

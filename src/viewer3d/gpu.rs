@@ -186,6 +186,10 @@ pub fn wgpu_setup() -> egui_wgpu::WgpuSetup {
     egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
         device_descriptor: Arc::new(move |adapter| {
             let mut descriptor = plain(adapter);
+            let offered = adapter.limits();
+            descriptor.required_limits.max_buffer_size = offered.max_buffer_size;
+            descriptor.required_limits.max_storage_buffer_binding_size =
+                offered.max_storage_buffer_binding_size;
             if adapter.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) {
                 descriptor.required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
                 descriptor.required_limits = descriptor
@@ -669,7 +673,21 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
     let gathered = gather(scene);
     let mut all: Vec<Vertex> = Vec::new();
     let mut batches = Vec::with_capacity(gathered.len());
+    let limits = device.limits();
+    let budget = if state.tracer.is_some() {
+        limits.max_buffer_size.min(limits.max_storage_buffer_binding_size)
+    } else {
+        limits.max_buffer_size
+    };
+    let fits = (budget / std::mem::size_of::<Vertex>() as u64) as usize;
+    let mut dropped = 0usize;
+    let mut full = false;
     for g in gathered {
+        full = full || all.len() + g.vertices.len() > fits;
+        if full {
+            dropped += g.vertices.len() / 3;
+            continue;
+        }
         let (group, material, maps) = g.key;
         let [texture, normal_map, metal_rough_map] = maps;
         batches.push(Batch {
@@ -685,6 +703,13 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
             aabb: g.aabb,
         });
         all.extend(g.vertices);
+    }
+    if dropped > 0 {
+        eprintln!(
+            "viewer3d: scene needs more than this GPU's {} MiB buffer limit, leaving out {dropped} of {} triangles",
+            budget >> 20,
+            dropped + all.len() / 3
+        );
     }
     let mut usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
     if let Some(tracer) = &state.tracer {

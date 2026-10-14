@@ -46,6 +46,8 @@ const STRIDE: u32 = 12u;
 @group(0) @binding(4) var<storage, read> texels: array<u32>;
 @group(0) @binding(5) var<storage, read> pictures: array<vec4<u32>>;
 
+var<private> visits: u32;
+
 fn pcg(v: u32) -> u32 {
     let s = v * 747796405u + 2891336453u;
     let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
@@ -335,6 +337,27 @@ fn path(px: vec2<f32>, seed: ptr<function, u32>) -> vec3<f32> {
     return min(sum * exposure, vec3<f32>(1.0));
 }
 
+fn heat(px: vec2<f32>, seed: ptr<function, u32>) -> vec3<f32> {
+    let ray = camera_ray(px);
+    visits = 0u;
+    let hit = trace_ray(ray[0], ray[1], 0.0, 1.0e30, false, seed);
+    if visits == 0u && !hit.found {
+        return params.background.rgb;
+    }
+    let t = clamp(log2(1.0 + f32(visits)) / 8.0, 0.0, 1.0);
+    let cold = vec3<f32>(0.02, 0.05, 0.35);
+    let mid = vec3<f32>(0.05, 0.6, 0.55);
+    let warm = vec3<f32>(0.95, 0.75, 0.05);
+    let hot = vec3<f32>(0.9, 0.08, 0.05);
+    if t < 0.33 {
+        return mix(cold, mid, t / 0.33);
+    }
+    if t < 0.66 {
+        return mix(mid, warm, (t - 0.33) / 0.33);
+    }
+    return mix(warm, hot, (t - 0.66) / 0.34);
+}
+
 @compute @workgroup_size(8, 8)
 fn trace_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = params.size.xy;
@@ -348,7 +371,11 @@ fn trace_main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var k = 0u; k < count; k++) {
         var seed = pcg(index ^ pcg(base + k + params.size.z * 7919u));
         let jitter = vec2<f32>(rand(&seed), rand(&seed));
-        total += path(vec2<f32>(id.xy) + jitter, &seed);
+        if params.size.w == 1u {
+            total += heat(vec2<f32>(id.xy) + jitter, &seed);
+        } else {
+            total += path(vec2<f32>(id.xy) + jitter, &seed);
+        }
     }
     var previous = vec4<f32>(0.0);
     if base > 0u {

@@ -8,7 +8,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use controls::{lighting_controls, trace_controls};
+pub use controls::{lighting_controls, mode_controls, trace_controls};
 pub use gpu::{draw_time, hardware_tracing, install, installed, wgpu_setup};
 
 pub type V3 = [f32; 3];
@@ -253,6 +253,134 @@ impl Painted {
     pub fn settled(&self) -> bool {
         self.target > 0 && self.samples >= self.target
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum RenderMode {
+    #[default]
+    Shaded,
+    Wireframe,
+    Triangles,
+    Normals,
+    Facets,
+    Depth,
+    Uv,
+    Groups,
+    Batches,
+    Backfaces,
+    Overdraw,
+    Traversal,
+}
+
+impl RenderMode {
+    pub const ALL: [RenderMode; 12] = [
+        RenderMode::Shaded,
+        RenderMode::Wireframe,
+        RenderMode::Triangles,
+        RenderMode::Normals,
+        RenderMode::Facets,
+        RenderMode::Depth,
+        RenderMode::Uv,
+        RenderMode::Groups,
+        RenderMode::Batches,
+        RenderMode::Backfaces,
+        RenderMode::Overdraw,
+        RenderMode::Traversal,
+    ];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            RenderMode::Shaded => "shaded",
+            RenderMode::Wireframe => "wireframe",
+            RenderMode::Triangles => "triangles",
+            RenderMode::Normals => "normals",
+            RenderMode::Facets => "facets",
+            RenderMode::Depth => "depth",
+            RenderMode::Uv => "uv",
+            RenderMode::Groups => "groups",
+            RenderMode::Batches => "batches",
+            RenderMode::Backfaces => "backfaces",
+            RenderMode::Overdraw => "overdraw",
+            RenderMode::Traversal => "traversal",
+        }
+    }
+
+    fn capped(&self) -> bool {
+        matches!(
+            self,
+            RenderMode::Shaded | RenderMode::Triangles | RenderMode::Groups | RenderMode::Batches
+        )
+    }
+}
+
+pub fn palette(index: usize) -> V3 {
+    let h = (index as f32 * 0.618_034 + 0.12).fract() * 6.0;
+    let (s, v) = (0.55, 0.85);
+    let f = h.fract();
+    let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f)));
+    let c = match h as u32 {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        _ => [v, p, q],
+    };
+    c.map(to_linear)
+}
+
+pub(super) fn batches<M: Material>(scene: &Scene<M>) -> (Vec<Option<usize>>, usize) {
+    let mut keys: Vec<(usize, M, Option<usize>)> = Vec::new();
+    let ids = scene
+        .surfaces
+        .iter()
+        .map(|s| {
+            if s.positions.len() < 3 {
+                return None;
+            }
+            let key = (s.group, s.material, s.texture.filter(|t| *t < scene.images.len()));
+            Some(keys.iter().position(|k| *k == key).unwrap_or_else(|| {
+                keys.push(key);
+                keys.len() - 1
+            }))
+        })
+        .collect();
+    (ids, keys.len())
+}
+
+pub(super) type Aabb = (V3, V3);
+
+pub(super) const EMPTY: Aabb = ([f32::MAX; 3], [f32::MIN; 3]);
+
+pub(super) fn grow(aabb: &mut Aabb, p: V3) {
+    aabb.0 = std::array::from_fn(|k| aabb.0[k].min(p[k]));
+    aabb.1 = std::array::from_fn(|k| aabb.1[k].max(p[k]));
+}
+
+pub(super) fn placed(aabb: &Aabb, look: &Look) -> [V3; 8] {
+    let (lo, hi) = aabb;
+    std::array::from_fn(|k| {
+        look.place([
+            if k & 1 == 0 { lo[0] } else { hi[0] },
+            if k & 2 == 0 { lo[1] } else { hi[1] },
+            if k & 4 == 0 { lo[2] } else { hi[2] },
+        ])
+    })
+}
+
+pub(super) fn depth_range(corners: &[[V3; 8]], vw: &View, ortho: bool) -> (f32, f32) {
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for c in corners.iter().flatten() {
+        let depth = dot(sub(*c, vw.eye), vw.forward);
+        lo = lo.min(depth);
+        hi = hi.max(depth);
+    }
+    if hi < lo || (!ortho && hi <= 0.0) {
+        return (vw.near, vw.far);
+    }
+    let pad = (hi - lo).max(vw.dist * 1.0e-3) * 0.01;
+    let (near, far) = (lo - pad, hi + pad);
+    if ortho { (near, far) } else { (near.max(far * 1.0e-3), far) }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -531,6 +659,7 @@ pub struct Viewer<M: Material = ()> {
     cut: Option<Cut>,
     style: Style,
     trace: Option<Trace>,
+    mode: RenderMode,
 }
 
 impl<M: Material> Viewer<M> {
@@ -542,7 +671,13 @@ impl<M: Material> Viewer<M> {
             cut: None,
             style: Style::default(),
             trace: None,
+            mode: RenderMode::Shaded,
         }
+    }
+
+    pub fn mode(mut self, mode: RenderMode) -> Viewer<M> {
+        self.mode = mode;
+        self
     }
 
     pub fn lighting(mut self, lighting: Lighting) -> Viewer<M> {
@@ -647,8 +782,8 @@ impl<M: Material> Viewer<M> {
         gpu::paint(ui, rect, self)
     }
 
-    pub fn render_traced(&self, width: usize, height: usize) -> Option<ColorImage> {
-        gpu::render_traced(self, width, height)
+    pub fn render_gpu(&self, width: usize, height: usize) -> Option<ColorImage> {
+        gpu::render_gpu(self, width, height)
     }
 
     pub fn render_soft(&self, width: usize, height: usize) -> ColorImage {

@@ -1,7 +1,7 @@
 use egui::{Color32, ColorImage, Pos2, Rect, Vec2};
 use egui_bench::viewer3d::{
-    self, BACKGROUND, Camera, Cut, Image, Lines, Look, Material, Scene, Shading, Surface, V3,
-    Viewer,
+    self, BACKGROUND, Camera, Cut, Image, Lines, Look, Material, RenderMode, Scene, Shading,
+    Surface, V3, Viewer,
 };
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
@@ -126,12 +126,16 @@ fn difference(a: &ColorImage, b: &ColorImage) -> (f32, f32) {
 }
 
 fn agrees(viewer: Viewer<Finish>, what: &str) -> ColorImage {
+    agrees_within(viewer, what, 3.0, 0.02)
+}
+
+fn agrees_within(viewer: Viewer<Finish>, what: &str, most: f32, most_far: f32) -> ColorImage {
     let gpu = rendered(viewer.clone());
     let soft = viewer.render_soft(SIZE[0], SIZE[1]);
     assert_eq!(gpu.size, soft.size);
     let (mean, far) = difference(&gpu, &soft);
     eprintln!("{what}: mean {mean:.2}, {:.2}% far", far * 100.0);
-    assert!(mean < 3.0 && far < 0.02, "{what}: mean {mean:.2}, far {far:.4}");
+    assert!(mean < most && far < most_far, "{what}: mean {mean:.2}, far {far:.4}");
     gpu
 }
 
@@ -162,6 +166,53 @@ fn the_gpu_draws_what_the_software_renderer_draws() {
 
     let turned = Camera { yaw: 2.2, pitch: -0.4, zoom: 1.6, ..Camera::default() };
     agrees(Viewer::new(scene, turned), "turned");
+}
+
+#[test]
+fn every_debug_mode_draws_what_the_software_renderer_draws() {
+    if !available() {
+        return;
+    }
+    let scene = Arc::new(scene());
+    let turned = Camera { yaw: 2.2, pitch: -0.4, zoom: 1.2, ortho: false, ..Camera::default() };
+    let cut = Some(Cut { normal: [0.0, -1.0, 0.0], offset: 0.0 });
+    for mode in RenderMode::ALL {
+        if mode == RenderMode::Traversal {
+            continue;
+        }
+        let name = mode.name();
+        let thin = matches!(mode, RenderMode::Wireframe | RenderMode::Triangles);
+        let (most, most_far) = if thin { (4.0, 0.06) } else { (3.0, 0.02) };
+        let base = Viewer::new(scene.clone(), Camera::default()).mode(mode);
+        let lit = agrees_within(base, name, most, most_far);
+        assert!(lit.pixels.iter().any(|p| *p != BACKGROUND), "{name} drew nothing");
+        let turned = Viewer::new(scene.clone(), turned).mode(mode).cut(cut);
+        agrees_within(turned, &format!("{name} cut"), most, most_far);
+    }
+}
+
+#[test]
+fn debug_modes_show_what_they_say() {
+    if !available() {
+        return;
+    }
+    let scene = Arc::new(scene());
+    let top = Camera { pitch: 1.5699, yaw: 0.0, ..Camera::default() };
+    let at = |image: &ColorImage, x: usize, y: usize| image.pixels[y * SIZE[0] + x];
+    let normals = rendered(Viewer::new(scene.clone(), top).mode(RenderMode::Normals));
+    let up = at(&normals, SIZE[0] / 2 - 60, SIZE[1] / 2);
+    assert!(up.b() > 240 && (up.r() as i32 - 128).abs() < 4, "{up:?}");
+    let wire = rendered(Viewer::new(scene.clone(), top).mode(RenderMode::Wireframe));
+    let solid = rendered(Viewer::new(scene.clone(), top));
+    let lit = |image: &ColorImage| image.pixels.iter().filter(|p| **p != BACKGROUND).count();
+    assert!(lit(&wire) * 4 < lit(&solid), "{} of {}", lit(&wire), lit(&solid));
+    let groups = rendered(Viewer::new(scene.clone(), top).mode(RenderMode::Groups));
+    let (a, b) =
+        (at(&groups, SIZE[0] / 2 - 60, SIZE[1] / 2), at(&groups, SIZE[0] / 2 + 80, SIZE[1] / 2));
+    assert!((0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 30), "{a:?} vs {b:?}");
+    let overdraw = rendered(Viewer::new(scene, top).mode(RenderMode::Overdraw));
+    let (once, bg) = (at(&overdraw, SIZE[0] / 2 - 60, SIZE[1] / 2), BACKGROUND);
+    assert!(once.r() > bg.r() + 40, "a cube is two layers deep from above: {once:?}");
 }
 
 #[test]

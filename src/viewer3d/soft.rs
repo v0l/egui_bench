@@ -1,5 +1,6 @@
 use super::{
-    Image, Material, Shading, Style, V3, View, Viewer, add, dot, norm, rgb, scale, sub, to_linear,
+    EMPTY, Image, Material, RenderMode, Shading, Style, V3, View, Viewer, add, batches, cross,
+    depth_range, dot, grow, norm, palette, placed, rgb, scale, sub, to_linear,
 };
 use egui::{Color32, ColorImage, Vec2};
 
@@ -81,8 +82,13 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
     let mut depth = vec![f32::INFINITY; w * h];
     let mut colour = vec![background; w * h];
+    let mut layers = vec![0u32; w * h];
     let selected = rgb(style.selected);
-    for surface in &viewer.scene.surfaces {
+    let mode = viewer.mode;
+    let (ids, _) = batches(&viewer.scene);
+    let (near, far) = span(viewer, &vw);
+    let wire = SUPERSAMPLE as f32;
+    for (surface, id) in viewer.scene.surfaces.iter().zip(&ids) {
         let look = viewer.look(surface.group);
         if !look.visible() {
             continue;
@@ -118,6 +124,13 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                 continue;
             }
             let inv_w = screen.map(|p| 1.0 / p[3]);
+            let length = |a: [f32; 4], b: [f32; 4]| (b[0] - a[0]).hypot(b[1] - a[1]).max(1.0e-9);
+            let lengths = [
+                length(screen[1], screen[2]),
+                length(screen[2], screen[0]),
+                length(screen[0], screen[1]),
+            ];
+            let facet = norm(cross(sub(corners[1], corners[0]), sub(corners[2], corners[0])));
             for y in y0..y1 as usize {
                 let py = y as f32 + 0.5;
                 for x in x0..x1 as usize {
@@ -137,9 +150,6 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                     let weight = [0, 1, 2].map(|k| bary[k] * inv_w[k] / total);
                     let z: f32 = (0..3).map(|k| weight[k] * screen[k][2]).sum();
                     let i = y * w + x;
-                    if z >= depth[i] {
-                        continue;
-                    }
                     let lerp = |a: &[V3]| {
                         [0, 1, 2].map(|c| (0..3).map(|k| weight[k] * a[t + k][c]).sum::<f32>())
                     };
@@ -147,8 +157,26 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                     if viewer.cut.is_some_and(|c| !c.keeps(pos)) {
                         continue;
                     }
+                    if mode == RenderMode::Overdraw {
+                        layers[i] += 1;
+                        continue;
+                    }
+                    if z >= depth[i] {
+                        continue;
+                    }
+                    let edge = 1.0
+                        - smoothstep(
+                            wire,
+                            (0..3)
+                                .map(|k| bary[k] * area.abs() / lengths[k])
+                                .fold(f32::MAX, f32::min),
+                        );
+                    if mode == RenderMode::Wireframe && edge < 0.5 {
+                        continue;
+                    }
                     depth[i] = z;
                     if back
+                        && mode.capped()
                         && shading.capped
                         && look.opacity >= 1.0
                         && let Some(c) = viewer.cut
@@ -157,19 +185,57 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                         continue;
                     }
                     let n = norm(look.turn(lerp(&surface.normals)));
+                    let uv = |c: usize| {
+                        if surface.uvs.len() > t + 2 {
+                            (0..3).map(|k| weight[k] * surface.uvs[t + k][c]).sum()
+                        } else {
+                            0.0
+                        }
+                    };
                     let albedo = match image {
                         Some(image) if surface.uvs.len() > t + 2 => {
-                            let uv =
-                                |c: usize| (0..3).map(|k| weight[k] * surface.uvs[t + k][c]).sum();
                             sample(image, uv(0), uv(1)).map(to_linear)
                         }
                         _ => base,
                     };
                     let albedo = [0, 1, 2].map(|k| albedo[k] + (selected[k] - albedo[k]) * tint);
                     let v = if ortho { scale(vw.forward, -1.0) } else { norm(sub(vw.eye, pos)) };
-                    colour[i] = shade(albedo, n, v, shading, &style, &lights);
+                    let lit = |albedo: V3, n: V3| shade(albedo, n, v, shading, &style, &lights);
+                    colour[i] = match mode {
+                        RenderMode::Wireframe => albedo.map(|c| to_srgb(c * 0.6 + 0.3)),
+                        RenderMode::Normals => n.map(|c| c * 0.5 + 0.5),
+                        RenderMode::Depth => {
+                            let t = ((z - near) / (far - near).max(1.0e-12)).clamp(0.0, 1.0);
+                            [1.0 - t * 0.85; 3]
+                        }
+                        RenderMode::Uv => {
+                            let (u, v) = (uv(0), uv(1));
+                            let even =
+                                ((u * 8.0).floor() as i64 + (v * 8.0).floor() as i64) % 2 == 0;
+                            let k = if even { 1.0 } else { 0.55 };
+                            [u.rem_euclid(1.0) * k, v.rem_euclid(1.0) * k, 0.5 * k]
+                        }
+                        RenderMode::Groups => lit(palette(surface.group), n),
+                        RenderMode::Batches => lit(palette(id.unwrap_or(0)), n),
+                        RenderMode::Backfaces => {
+                            lit(if back { [0.85, 0.2, 0.15] } else { [0.2, 0.4, 0.85] }, n)
+                        }
+                        RenderMode::Facets => lit(albedo, facet),
+                        RenderMode::Triangles => {
+                            let c = lit(albedo, n);
+                            let line = [0.06, 0.07, 0.08];
+                            [0, 1, 2].map(|k| c[k] + (line[k] - c[k]) * edge * 0.85)
+                        }
+                        _ => lit(albedo, n),
+                    };
                 }
             }
+        }
+    }
+    if mode == RenderMode::Overdraw {
+        let heat = [0.1, 0.05, 0.02];
+        for (c, n) in colour.iter_mut().zip(&layers) {
+            *c = [0, 1, 2].map(|k| (background[k] + heat[k] * *n as f32).min(1.0));
         }
     }
     let mut out = ColorImage::new([width, height], vec![Color32::BLACK; width * height]);
@@ -188,4 +254,40 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
         }
     }
     out
+}
+
+fn smoothstep(edge: f32, x: f32) -> f32 {
+    let t = (x / edge).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn span<M: Material>(viewer: &Viewer<M>, vw: &View) -> (f32, f32) {
+    let scene = &viewer.scene;
+    let (ids, count) = batches(scene);
+    let mut boxes = vec![(EMPTY, 0usize); count];
+    for (s, id) in scene.surfaces.iter().zip(ids) {
+        if let Some(id) = id {
+            boxes[id].1 = s.group;
+            for p in &s.positions[..s.positions.len() / 3 * 3] {
+                grow(&mut boxes[id].0, *p);
+            }
+        }
+    }
+    let mut corners: Vec<[V3; 8]> = boxes
+        .iter()
+        .map(|(aabb, group)| (aabb, viewer.look(*group)))
+        .filter(|(_, look)| look.visible())
+        .map(|(aabb, look)| placed(aabb, &look))
+        .collect();
+    for l in scene.lines.iter().filter(|l| !l.segments.is_empty()) {
+        let look = viewer.look(l.group);
+        if look.visible() {
+            let mut aabb = EMPTY;
+            for p in l.segments.iter().flatten() {
+                grow(&mut aabb, *p);
+            }
+            corners.push(placed(&aabb, &look));
+        }
+    }
+    depth_range(&corners, vw, viewer.camera.ortho)
 }

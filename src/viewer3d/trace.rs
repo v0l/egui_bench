@@ -111,6 +111,7 @@ pub(super) struct Shot<'a> {
     pub cut: Option<Cut>,
     pub trace: Trace,
     pub radius: f32,
+    pub heat: bool,
     pub size: [u32; 2],
     pub instances: u32,
 }
@@ -140,7 +141,7 @@ impl Params {
             cap: four(cap, if shot.cut.is_some() { 1.0 } else { 0.0 }),
             clip,
             counts: [base, count, shot.trace.bounces.max(1), shot.instances],
-            size: [shot.size[0], shot.size[1], stamp, 0],
+            size: [shot.size[0], shot.size[1], stamp, shot.heat as u32],
         }
     }
 }

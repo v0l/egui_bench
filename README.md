@@ -172,7 +172,7 @@ a choice is made, and `Picked::Cancelled` on cancel or escape.
 ### `viewer3d` - a 3D viewport (feature `viewer3d`)
 
 ```toml
-egui_bench = { version = "0.3", features = ["viewer3d"] }
+egui_bench = { version = "0.4", features = ["viewer3d"] }
 ```
 
 The shaded model view out of gcad and agentee: key and fill light, edges drawn at
@@ -264,8 +264,21 @@ let options = eframe::NativeOptions {
 
 Without them it traces a BVH in a compute shader, which gives the same picture
 much more slowly, so keep `per_frame` low there. `viewer3d::hardware_tracing()`
-says which one you got, and `Viewer::render_traced(w, h)` renders a still at
-any size with every sample taken.
+says which one you got, and `Viewer::render_gpu(w, h)` renders a still at any
+size on the GPU, with every sample taken when tracing.
+
+#### Debug views
+
+`Viewer::mode(RenderMode::...)` swaps the shading for a view that shows how the
+model is built: `Wireframe` (triangle edges only, see-through), `Triangles`
+(edges over the shaded model), `Normals` (vertex normals as colour), `Facets`
+(flat shaded from the triangles themselves, so bad vertex normals stand out),
+`Depth`, `Uv` (a checker over the texture coordinates), `Groups` and `Batches`
+(a colour per group or per GPU draw), `Backfaces` (front blue, back red),
+`Overdraw` (brighter where more layers cover a pixel) and `Traversal`, a heat
+map of ray tracing cost: BVH steps on the compute tracer, candidate hits on ray
+query. All but `Traversal` work in the software renderer too.
+`viewer3d::mode_controls(ui, &mut mode)` is a picker for them.
 
 ### `update` - GitHub release updates (feature `update`)
 

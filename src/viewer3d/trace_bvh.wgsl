@@ -35,6 +35,7 @@ fn trace_ray(o: vec3<f32>, d: vec3<f32>, tmin: f32, tmax: f32, first_hit: bool, 
             continue;
         }
         loop {
+            visits += 1u;
             let node = nodes[current];
             if node.count == 0u {
                 let left = nodes[node.a];
@@ -52,6 +53,7 @@ fn trace_ray(o: vec3<f32>, d: vec3<f32>, tmin: f32, tmax: f32, first_hit: bool, 
                 }
             } else {
                 for (var k = 0u; k < node.count; k++) {
+                    visits += 1u;
                     let prim = prims[node.a + k];
                     let base = inst.refs.x + prim * 3u;
                     let a = position(base);

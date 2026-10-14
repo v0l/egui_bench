@@ -1,7 +1,7 @@
 use super::trace::{self, Frame, Piece, Shot, Target, Traced, Tracer};
 use super::{
-    Camera, Cut, Image, Look, Material, Painted, Scene, Style, Trace, V3, View, Viewer, dot, rgb,
-    sub, to_linear,
+    Aabb, Camera, Cut, EMPTY, Image, Look, Material, Painted, RenderMode, Scene, Style, Trace, V3,
+    View, Viewer, batches, depth_range, dot, grow, palette, placed, rgb, sub, to_linear,
 };
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, Ui};
@@ -31,6 +31,8 @@ struct FrameUniform {
     cap: [f32; 4],
     clip: [f32; 4],
     viewport: [f32; 4],
+    forward: [f32; 4],
+    debug: [f32; 4],
 }
 
 #[repr(C)]
@@ -53,8 +55,6 @@ struct Vertex {
     uv: [f32; 2],
     pad: f32,
 }
-
-type Aabb = (V3, V3);
 
 struct Batch {
     group: usize,
@@ -122,7 +122,7 @@ struct Pipelines {
     surface_layout: wgpu::PipelineLayout,
     line_layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
-    surfaces: HashMap<(bool, i32, bool), wgpu::RenderPipeline>,
+    surfaces: HashMap<(Fill, i32), wgpu::RenderPipeline>,
     lines: HashMap<bool, wgpu::RenderPipeline>,
 }
 
@@ -293,15 +293,9 @@ impl Pipelines {
         }
     }
 
-    fn surface(
-        &mut self,
-        device: &wgpu::Device,
-        see_through: bool,
-        bias: i32,
-        depth_only: bool,
-    ) -> &wgpu::RenderPipeline {
+    fn surface(&mut self, device: &wgpu::Device, fill: Fill, bias: i32) -> &wgpu::RenderPipeline {
         let (layout, module) = (&self.surface_layout, &self.module);
-        self.surfaces.entry((see_through, bias, depth_only)).or_insert_with(|| {
+        self.surfaces.entry((fill, bias)).or_insert_with(|| {
             let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2];
             pipeline(
                 device,
@@ -313,9 +307,8 @@ impl Pipelines {
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &attributes,
                 },
-                see_through,
+                fill,
                 wgpu::DepthBiasState { constant: 1, slope_scale: bias as f32 / 100.0, clamp: 0.0 },
-                if depth_only { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
             )
         })
     }
@@ -334,37 +327,63 @@ impl Pipelines {
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &attributes,
                 },
-                see_through,
+                if see_through { Fill::SeeThrough } else { Fill::Opaque },
                 wgpu::DepthBiasState::default(),
-                wgpu::ColorWrites::ALL,
             )
         })
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Fill {
+    Opaque,
+    SeeThrough,
+    DepthOnly,
+    Additive,
+}
+
 fn pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     (vertex, fragment): (&str, &str),
     buffer: wgpu::VertexBufferLayout,
-    see_through: bool,
+    fill: Fill,
     bias: wgpu::DepthBiasState,
-    write_mask: wgpu::ColorWrites,
 ) -> wgpu::RenderPipeline {
-    let blend = see_through.then_some(wgpu::BlendState {
-        color: wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::SrcAlpha,
-            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-            operation: wgpu::BlendOperation::Add,
-        },
-        alpha: wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::Zero,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        },
-    });
+    let keep = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    let blend = match fill {
+        Fill::SeeThrough => Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: keep,
+        }),
+        Fill::Additive => Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: keep,
+        }),
+        Fill::Opaque | Fill::DepthOnly => None,
+    };
+    let write_mask = match fill {
+        Fill::DepthOnly => wgpu::ColorWrites::empty(),
+        _ => wgpu::ColorWrites::ALL,
+    };
+    let (depth_write, depth_compare) = match fill {
+        Fill::Opaque | Fill::DepthOnly => (true, wgpu::CompareFunction::Less),
+        Fill::SeeThrough => (false, wgpu::CompareFunction::Less),
+        Fill::Additive => (false, wgpu::CompareFunction::Always),
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(vertex),
         layout: Some(layout),
@@ -388,8 +407,8 @@ fn pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH,
-            depth_write_enabled: Some(!see_through),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(depth_compare),
             stencil: Default::default(),
             bias,
         }),
@@ -501,13 +520,6 @@ fn four(v: V3, w: f32) -> [f32; 4] {
     [v[0], v[1], v[2], w]
 }
 
-fn grow(aabb: &mut Aabb, p: V3) {
-    aabb.0 = std::array::from_fn(|k| aabb.0[k].min(p[k]));
-    aabb.1 = std::array::from_fn(|k| aabb.1[k].max(p[k]));
-}
-
-const EMPTY: Aabb = ([f32::MAX; 3], [f32::MIN; 3]);
-
 fn vertex_buffer(state: &State, label: &str, bytes: &[u8]) -> wgpu::Buffer {
     let buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
@@ -525,16 +537,17 @@ struct Gathered<M> {
     aabb: Aabb,
 }
 
-fn gather<M: Material>(scene: &Scene<M>, textures: usize) -> Vec<Gathered<M>> {
-    let mut out: Vec<Gathered<M>> = Vec::new();
-    for s in scene.surfaces.iter().filter(|s| s.positions.len() >= 3) {
-        let key = (s.group, s.material, s.texture.filter(|t| *t < textures));
-        let at = out.iter().position(|g| g.key == key).unwrap_or_else(|| {
-            out.push(Gathered { key, vertices: Vec::new(), aabb: EMPTY });
-            out.len() - 1
+fn gather<M: Material>(scene: &Scene<M>) -> Vec<Gathered<M>> {
+    let (ids, count) = batches(scene);
+    let mut out: Vec<Option<Gathered<M>>> = (0..count).map(|_| None).collect();
+    for (s, id) in scene.surfaces.iter().zip(ids) {
+        let Some(id) = id else { continue };
+        let g = out[id].get_or_insert_with(|| Gathered {
+            key: (s.group, s.material, s.texture.filter(|t| *t < scene.images.len())),
+            vertices: Vec::new(),
+            aabb: EMPTY,
         });
         let colour = s.colour.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
-        let g = &mut out[at];
         for (i, p) in s.positions.iter().take(s.positions.len() / 3 * 3).enumerate() {
             grow(&mut g.aabb, *p);
             g.vertices.push(Vertex {
@@ -546,7 +559,7 @@ fn gather<M: Material>(scene: &Scene<M>, textures: usize) -> Vec<Gathered<M>> {
             });
         }
     }
-    out
+    out.into_iter().flatten().collect()
 }
 
 fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
@@ -564,7 +577,7 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
             )
         })
         .collect();
-    let gathered = gather(scene, textures.len());
+    let gathered = gather(scene);
     let mut all: Vec<Vertex> = Vec::new();
     let mut batches = Vec::with_capacity(gathered.len());
     for g in gathered {
@@ -624,7 +637,7 @@ fn trace_scene<M: Material>(
     scene: &Scene<M>,
     uploaded: &Uploaded,
 ) -> Traced {
-    let gathered = gather(scene, uploaded.textures.len());
+    let gathered = gather(scene);
     let triangles: Vec<Vec<[V3; 3]>> = gathered
         .iter()
         .map(|g| {
@@ -676,32 +689,6 @@ pub(super) fn normal_matrix(m: &[f32; 16]) -> [[f32; 4]; 4] {
         [n(0, 2), n(1, 2), n(2, 2), 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
-}
-
-fn placed(aabb: &Aabb, look: &Look) -> [V3; 8] {
-    let (lo, hi) = aabb;
-    std::array::from_fn(|k| {
-        look.place([
-            if k & 1 == 0 { lo[0] } else { hi[0] },
-            if k & 2 == 0 { lo[1] } else { hi[1] },
-            if k & 4 == 0 { lo[2] } else { hi[2] },
-        ])
-    })
-}
-
-fn depth_range(corners: &[[V3; 8]], vw: &View, ortho: bool) -> (f32, f32) {
-    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for c in corners.iter().flatten() {
-        let depth = dot(sub(*c, vw.eye), vw.forward);
-        lo = lo.min(depth);
-        hi = hi.max(depth);
-    }
-    if hi < lo || (!ortho && hi <= 0.0) {
-        return (vw.near, vw.far);
-    }
-    let pad = (hi - lo).max(vw.dist * 1.0e-3) * 0.01;
-    let (near, far) = (lo - pad, hi + pad);
-    if ortho { (near, far) } else { (near.max(far * 1.0e-3), far) }
 }
 
 fn view_projection(vw: &View, size: [u32; 2], ortho: bool, near: f32, far: f32) -> [[f32; 4]; 4] {
@@ -949,7 +936,11 @@ fn draw<M: Material>(
             tint,
             gloss: [s.gloss, s.sharpness, s.metal, if s.capped { 1.0 } else { 0.0 }],
             params: [opacity, if batch.texture.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
-            colour: [0.0; 4],
+            colour: match viewer.mode {
+                RenderMode::Groups => four(palette(batch.group), 1.0),
+                RenderMode::Batches => four(palette(i), 1.0),
+                _ => [0.0; 4],
+            },
         });
         let box_ = placed(&batch.aabb, &look);
         items.push(Item {
@@ -1002,6 +993,8 @@ fn draw<M: Material>(
         },
         clip: clip.unwrap_or([0.0, 0.0, 1.0, 0.0]),
         viewport: [size[0] as f32, size[1] as f32, if clip.is_some() { 1.0 } else { 0.0 }, 0.0],
+        forward: four(vw.forward, 0.0),
+        debug: [viewer.mode as u32 as f32, near, far, ppp.max(1.0)],
     };
     let bias = ((widest * 0.5 + 1.0) * 100.0).round() as i32;
     if canvas.capacity < draws.len() as u64 {
@@ -1034,6 +1027,7 @@ fn draw<M: Material>(
         }
         let target = canvas.target.as_mut().expect("made above");
         let offline = matches!(mode, Mode::Offline(_));
+        let heat = viewer.mode == RenderMode::Traversal;
         let moved = canvas.last.as_ref() != Some(&snapshot);
         if moved {
             canvas.last = Some(snapshot);
@@ -1052,6 +1046,7 @@ fn draw<M: Material>(
             cut: viewer.cut,
             trace,
             radius: scene.radius,
+            heat,
             size,
             instances: looks.len() as u32,
         };
@@ -1073,7 +1068,7 @@ fn draw<M: Material>(
                 queue.submit([chunk.finish()]);
                 let _ = device.poll(wgpu::PollType::wait_indefinitely());
             }
-        } else if !moved && target.samples < trace.samples {
+        } else if (heat || !moved) && target.samples < trace.samples {
             let count = trace.per_frame.min(trace.samples - target.samples);
             tracer.dispatch(
                 &device,
@@ -1103,11 +1098,16 @@ fn draw<M: Material>(
     if present.is_some() {
         order.retain(|i| matches!(items[*i].kind, Kind::Stroke(_)) || !items[*i].see_through);
     }
-    let depth_only = present.is_some();
+    let fill = |item: &Item| match (present.is_some(), viewer.mode, item.see_through) {
+        (true, _, _) => Fill::DepthOnly,
+        (_, RenderMode::Overdraw, _) => Fill::Additive,
+        (_, _, true) => Fill::SeeThrough,
+        _ => Fill::Opaque,
+    };
     for item in &items {
         match item.kind {
             Kind::Batch(_) => {
-                state.pipelines.surface(&device, item.see_through, bias, depth_only);
+                state.pipelines.surface(&device, fill(item), bias);
             }
             Kind::Stroke(_) => {
                 state.pipelines.line(&device, item.see_through);
@@ -1170,7 +1170,7 @@ fn draw<M: Material>(
                         .texture
                         .and_then(|t| uploaded.textures.get(t))
                         .unwrap_or(&state.blank);
-                    let key = (item.see_through, bias, depth_only);
+                    let key = (fill(item), bias);
                     pass.set_pipeline(&state.pipelines.surfaces[&key]);
                     pass.set_bind_group(2, group, &[]);
                     pass.set_vertex_buffer(0, uploaded.vertices.slice(..));
@@ -1189,6 +1189,16 @@ fn draw<M: Material>(
     painted
 }
 
+const HEAT: Trace = Trace { samples: 4, bounces: 1, per_frame: 4 };
+
+fn pass_for<M: Material>(viewer: &Viewer<M>) -> Option<Trace> {
+    match viewer.mode {
+        RenderMode::Traversal => Some(HEAT),
+        RenderMode::Shaded => viewer.trace,
+        _ => None,
+    }
+}
+
 fn render<M: Material>(
     state: &mut State,
     viewer: &Viewer<M>,
@@ -1197,13 +1207,13 @@ fn render<M: Material>(
 ) -> (egui::TextureId, Painted) {
     let index = state.slot(size);
     let mut canvas = state.slots[index].canvas.take().expect("slot canvas");
-    let mode = viewer.trace.map_or(Mode::Raster, Mode::Live);
+    let mode = pass_for(viewer).map_or(Mode::Raster, Mode::Live);
     let painted = draw(state, &mut canvas, viewer, ppp, mode);
     state.slots[index].canvas = Some(canvas);
     (state.slots[index].texture, painted)
 }
 
-pub(super) fn render_traced<M: Material>(
+pub(super) fn render_gpu<M: Material>(
     viewer: &Viewer<M>,
     width: usize,
     height: usize,
@@ -1211,14 +1221,14 @@ pub(super) fn render_traced<M: Material>(
     STATE.with(|cell| {
         let mut slot = cell.borrow_mut();
         let state = slot.as_mut()?;
-        state.tracer.as_ref()?;
+        let trace = pass_for(viewer);
+        if trace.is_some() {
+            state.tracer.as_ref()?;
+        }
         let size = [width.max(1) as u32, height.max(1) as u32];
         let mut canvas = state.canvas(size);
-        let trace = viewer.trace.unwrap_or_default();
-        let painted = draw(state, &mut canvas, viewer, 1.0, Mode::Offline(trace));
-        if !painted.traced() && !viewer.scene.surfaces.is_empty() {
-            return None;
-        }
+        let mode = trace.map_or(Mode::Raster, Mode::Offline);
+        draw(state, &mut canvas, viewer, 1.0, mode);
         Some(read_back(state, &canvas))
     })
 }

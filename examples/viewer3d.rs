@@ -1,7 +1,7 @@
 use egui_bench::prelude::*;
 use egui_bench::viewer3d::{
-    self, Camera, Cut, Lighting, Lines, Look, Material, Orbit, Painted, Scene, Shading, Surface,
-    Trace, V3, Viewer,
+    self, Camera, Cut, Lighting, Lines, Look, Material, Orbit, Painted, RenderMode, Scene, Shading,
+    Surface, Trace, V3, Viewer,
 };
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -135,6 +135,7 @@ struct Demo {
     trace: Trace,
     traced: bool,
     painted: Painted,
+    mode: RenderMode,
 }
 
 impl eframe::App for Demo {
@@ -173,6 +174,8 @@ impl eframe::App for Demo {
         });
         egui::Panel::right("lighting").show(ui, |ui| {
             ui.add_space(6.0);
+            viewer3d::mode_controls(ui, &mut self.mode);
+            ui.add_space(6.0);
             viewer3d::lighting_controls(ui, &mut self.lighting);
             ui.add_space(10.0);
             ui.label(legend("ray tracing"));
@@ -193,7 +196,8 @@ impl eframe::App for Demo {
                 .looks(looks)
                 .cut(cut)
                 .lighting(self.lighting)
-                .trace(self.traced.then_some(self.trace));
+                .trace(self.traced.then_some(self.trace))
+                .mode(self.mode);
             viewer.navigate(ui, &response, &mut self.orbit);
             if response.double_clicked() {
                 self.camera = Camera { ortho: self.camera.ortho, ..Camera::default() };
@@ -262,6 +266,7 @@ fn main() -> eframe::Result<()> {
                 trace: Trace::default(),
                 traced: false,
                 painted: Painted::default(),
+                mode: RenderMode::Shaded,
             }))
         }),
     )

@@ -1,5 +1,5 @@
-use super::{Light, Lighting, Trace};
-use crate::form::row;
+use super::{Light, Lighting, RenderMode, Trace};
+use crate::form::{choice, row};
 use crate::text::legend;
 use egui::{Slider, Ui};
 
@@ -64,6 +64,15 @@ pub fn trace_controls(ui: &mut Ui, trace: &mut Trace) -> bool {
     });
     row(ui, "per frame", |ui| {
         changed |= ui.add(Slider::new(&mut trace.per_frame, 1..=64)).changed();
+    });
+    changed
+}
+
+pub fn mode_controls(ui: &mut Ui, mode: &mut RenderMode) -> bool {
+    let mut changed = false;
+    row(ui, "view", |ui| {
+        let options = RenderMode::ALL.map(|m| (m, m.name().to_string()));
+        changed = choice(ui, "viewer3d render mode", mode, options);
     });
     changed
 }

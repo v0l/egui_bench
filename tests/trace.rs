@@ -1,7 +1,7 @@
 use egui::{Color32, ColorImage, Pos2, Rect, Vec2};
 use egui_bench::viewer3d::{
-    self, Camera, Cut, Light, Lighting, Lines, Look, Material, Painted, Projector, Scene, Shading,
-    Surface, Trace, V3, Viewer,
+    self, Camera, Cut, Light, Lighting, Lines, Look, Material, Painted, Projector, RenderMode,
+    Scene, Shading, Surface, Trace, V3, Viewer,
 };
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
@@ -107,7 +107,7 @@ fn direct() -> Option<Trace> {
 fn traced(hardware: bool) -> Option<ColorImage> {
     device(hardware)?;
     let viewer = Viewer::new(bench(), top()).lighting(sun()).trace(direct());
-    viewer.render_traced(SIZE[0], SIZE[1])
+    viewer.render_gpu(SIZE[0], SIZE[1])
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn a_traced_section_is_capped() {
         if device(hardware).is_none() {
             continue;
         }
-        let image = cut_cube().render_traced(SIZE[0], SIZE[1]).expect("traced");
+        let image = cut_cube().render_gpu(SIZE[0], SIZE[1]).expect("traced");
         let orange =
             image.pixels.iter().filter(|p| p.r() > 120 && p.g() > 50 && p.b() < 50).count();
         assert!(orange > 1000, "hardware {hardware}: {orange} cap pixels");
@@ -189,16 +189,15 @@ fn a_traced_ghost_shows_what_is_behind_it_and_a_hidden_part_is_gone() {
         });
         let centre = rect().center();
         let base = Viewer::new(scene, top()).trace(direct());
-        let solid = pixel(&base.render_traced(SIZE[0], SIZE[1]).unwrap(), centre);
+        let solid = pixel(&base.render_gpu(SIZE[0], SIZE[1]).unwrap(), centre);
         let ghost = [Look { opacity: 0.3, ..Look::default() }, Look::default()];
-        let seen =
-            pixel(&base.clone().looks(ghost).render_traced(SIZE[0], SIZE[1]).unwrap(), centre);
+        let seen = pixel(&base.clone().looks(ghost).render_gpu(SIZE[0], SIZE[1]).unwrap(), centre);
         assert!(
             seen.r() as i32 - seen.b() as i32 > solid.r() as i32 - solid.b() as i32 + 40,
             "hardware {hardware}: {solid:?} then {seen:?}"
         );
         let hidden = [Look::HIDDEN, Look::HIDDEN];
-        let gone = base.looks(hidden).render_traced(SIZE[0], SIZE[1]).unwrap();
+        let gone = base.looks(hidden).render_gpu(SIZE[0], SIZE[1]).unwrap();
         let bg = viewer3d::BACKGROUND;
         let near = |p: &Color32| (0..3).all(|k| (p[k] as i32 - bg[k] as i32).abs() <= 1);
         assert!(gone.pixels.iter().all(near), "hardware {hardware}");
@@ -223,7 +222,7 @@ fn lines_are_drawn_over_a_traced_picture() {
         radius: 1.2,
         ..Default::default()
     });
-    let image = Viewer::new(scene, top()).trace(direct()).render_traced(SIZE[0], SIZE[1]).unwrap();
+    let image = Viewer::new(scene, top()).trace(direct()).render_gpu(SIZE[0], SIZE[1]).unwrap();
     let row = SIZE[1] / 2;
     let green = (0..SIZE[0])
         .filter(|x| {
@@ -263,4 +262,42 @@ fn the_viewport_rasters_while_moving_then_refines_to_the_target() {
     camera.lock().unwrap().yaw += 0.3;
     harness.step();
     assert_eq!(painted.lock().unwrap().last().unwrap().samples, 0);
+}
+
+#[test]
+fn the_traversal_heatmap_lights_up_geometry_and_leaves_empty_space_alone() {
+    let _gpu = serial();
+    for hardware in [false, true] {
+        if device(hardware).is_none() {
+            continue;
+        }
+        let viewer = Viewer::new(bench(), top()).mode(RenderMode::Traversal);
+        let image = viewer.render_gpu(SIZE[0], SIZE[1]).expect("traced");
+        let at = Projector::new(viewer.scene(), &top(), rect());
+        let block = pixel(&image, at.project([0.0, 0.0, 0.4]).unwrap());
+        let bg = viewer3d::BACKGROUND;
+        assert!(
+            (0..3).any(|k| (block[k] as i32 - bg[k] as i32).abs() > 20),
+            "hardware {hardware}: {block:?}"
+        );
+        assert_eq!(image.pixels[0], bg, "hardware {hardware}");
+    }
+}
+
+#[test]
+fn render_gpu_without_a_trace_is_the_raster_view() {
+    let _gpu = serial();
+    if device(false).is_none() {
+        return;
+    }
+    let viewer = Viewer::new(bench(), top()).lighting(sun());
+    let gpu = viewer.render_gpu(SIZE[0], SIZE[1]).unwrap();
+    let soft = viewer.render_soft(SIZE[0], SIZE[1]);
+    let far = gpu
+        .pixels
+        .iter()
+        .zip(&soft.pixels)
+        .filter(|(a, b)| (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 40))
+        .count();
+    assert!(far < gpu.pixels.len() / 50, "{far} pixels differ");
 }

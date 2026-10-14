@@ -1,4 +1,4 @@
-use super::{Light, Lighting, RenderMode, Trace};
+use super::{Light, Lighting, Preset, RenderMode, Trace};
 use crate::form::{choice, row};
 use crate::text::legend;
 use egui::{Slider, Ui};
@@ -65,6 +65,30 @@ pub fn trace_controls(ui: &mut Ui, trace: &mut Trace) -> bool {
     row(ui, "per frame", |ui| {
         changed |= ui.add(Slider::new(&mut trace.per_frame, 1..=64)).changed();
     });
+    changed
+}
+
+pub fn preset_controls(ui: &mut Ui, preset: &mut Preset) -> bool {
+    let hour = match *preset {
+        Preset::Outdoor { hour } => hour,
+        _ => 15.0,
+    };
+    let mut changed = false;
+    row(ui, "lighting", |ui| {
+        let options = [Preset::Studio, Preset::Overcast, Preset::Outdoor { hour }]
+            .map(|p| (p, p.name().to_string()));
+        changed = choice(ui, "viewer3d lighting preset", preset, options);
+    });
+    if let Preset::Outdoor { hour } = preset {
+        row(ui, "time of day", |ui| {
+            changed |= ui
+                .add(Slider::new(hour, 0.0..=24.0).custom_formatter(|h, _| {
+                    let minutes = (h * 60.0).round() as u32 % (24 * 60);
+                    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+                }))
+                .changed();
+        });
+    }
     changed
 }
 

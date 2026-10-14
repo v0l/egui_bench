@@ -1,12 +1,13 @@
 @group(0) @binding(6) var tlas: acceleration_structure;
 
 fn trace_ray(o: vec3<f32>, d: vec3<f32>, tmin: f32, tmax: f32, first_hit: bool, seed: ptr<function, u32>) -> Hit {
+    filtered = vec3<f32>(1.0);
     var rq: ray_query;
     rayQueryInitialize(&rq, tlas, RayDesc(RAY_FLAG_FORCE_NO_OPAQUE, 0xFFu, tmin, tmax, o, d));
     while rayQueryProceed(&rq) {
         visits += 1u;
         let c = rayQueryGetCandidateIntersection(&rq);
-        if c.kind == RAY_QUERY_INTERSECTION_TRIANGLE && accept(o, d, c.t, c.instance_custom_data, seed) {
+        if c.kind == RAY_QUERY_INTERSECTION_TRIANGLE && accept(o, d, c.t, c.instance_custom_data, c.primitive_index, first_hit) {
             rayQueryConfirmIntersection(&rq);
             if first_hit {
                 rayQueryTerminate(&rq);

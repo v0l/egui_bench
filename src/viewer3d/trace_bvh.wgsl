@@ -17,6 +17,7 @@ fn entry(node: Node, o: vec3<f32>, inv: vec3<f32>, tmin: f32, tmax: f32) -> f32 
 }
 
 fn trace_ray(o: vec3<f32>, d: vec3<f32>, tmin: f32, tmax: f32, first_hit: bool, seed: ptr<function, u32>) -> Hit {
+    filtered = vec3<f32>(1.0);
     var best: Hit;
     best.found = false;
     best.t = tmax;
@@ -73,7 +74,7 @@ fn trace_ray(o: vec3<f32>, d: vec3<f32>, tmin: f32, tmax: f32, first_hit: bool, 
                     if u < 0.0 || v < 0.0 || u + v > 1.0 || t <= tmin || t >= best.t {
                         continue;
                     }
-                    if !accept(o, d, t, i, seed) {
+                    if !accept(o, d, t, i, prim, first_hit) {
                         continue;
                     }
                     best.found = true;

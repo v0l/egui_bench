@@ -1,5 +1,7 @@
 mod controls;
+mod environment;
 mod gpu;
+mod maps;
 mod soft;
 mod trace;
 
@@ -8,7 +10,8 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use controls::{lighting_controls, mode_controls, trace_controls};
+pub use controls::{lighting_controls, mode_controls, preset_controls, trace_controls};
+pub use environment::{Environment, EnvironmentLight};
 pub use gpu::{draw_time, hardware_tracing, install, installed, wgpu_setup};
 
 pub type V3 = [f32; 3];
@@ -34,9 +37,72 @@ impl Default for Shading {
     }
 }
 
+impl Shading {
+    pub fn pbr(&self) -> Pbr {
+        Pbr {
+            roughness: (2.0 / (self.sharpness.max(0.0) + 2.0)).powf(0.25),
+            metallic: self.metal.clamp(0.0, 1.0),
+            specular: self.gloss.max(0.0) / 0.24,
+            ..Pbr::default()
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Pbr {
+    pub roughness: f32,
+    pub metallic: f32,
+    pub specular: f32,
+    pub emission: V3,
+    pub transmission: f32,
+    pub ior: f32,
+    pub clearcoat: f32,
+    pub clearcoat_roughness: f32,
+    pub normal_scale: f32,
+}
+
+impl Default for Pbr {
+    fn default() -> Self {
+        Pbr {
+            roughness: 0.5,
+            metallic: 0.0,
+            specular: 0.5,
+            emission: [0.0; 3],
+            transmission: 0.0,
+            ior: 1.5,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.05,
+            normal_scale: 1.0,
+        }
+    }
+}
+
+impl Pbr {
+    pub fn sharpness(&self) -> f32 {
+        let r = self.roughness.clamp(0.02, 1.0);
+        (2.0 / (r * r * r * r) - 2.0).min(4096.0)
+    }
+
+    pub fn gloss(&self) -> f32 {
+        self.specular.max(0.0) * 0.24
+    }
+
+    pub fn see_through(&self) -> bool {
+        self.transmission > 0.0
+    }
+
+    pub fn raster_opacity(&self) -> f32 {
+        1.0 - 0.75 * self.transmission.clamp(0.0, 1.0)
+    }
+}
+
 pub trait Material: Copy + Eq + Hash + Default + Send + Sync + 'static {
     fn shading(&self) -> Shading {
         Shading::default()
+    }
+
+    fn pbr(&self) -> Pbr {
+        self.shading().pbr()
     }
 }
 
@@ -49,6 +115,8 @@ pub struct Surface<M = ()> {
     pub uvs: Vec<[f32; 2]>,
     pub colour: V3,
     pub texture: Option<usize>,
+    pub normal_map: Option<usize>,
+    pub metal_rough_map: Option<usize>,
     pub material: M,
     pub group: usize,
 }
@@ -199,6 +267,60 @@ impl Lighting {
         follow: true,
     };
 
+    pub const OVERCAST: Lighting = Lighting {
+        key: Light {
+            azimuth: 0.7,
+            elevation: 1.2,
+            intensity: 0.3,
+            colour: Color32::from_rgb(235, 238, 245),
+            spread: 0.5,
+        },
+        fill: Light {
+            azimuth: -2.4,
+            elevation: 0.5,
+            intensity: 0.1,
+            colour: Color32::from_rgb(225, 230, 240),
+            spread: 0.5,
+        },
+        ambient: 0.8,
+        sky: Color32::from_rgb(228, 232, 240),
+        ground: Color32::from_rgb(150, 146, 138),
+        exposure: 1.0,
+        follow: false,
+    };
+
+    pub fn outdoor(hour: f32) -> Lighting {
+        let d = sun_direction(hour.rem_euclid(24.0));
+        let elevation = d[2].asin().to_degrees();
+        let day = smoothstep(-6.0, 4.0, elevation);
+        let high = smoothstep(0.0, 30.0, elevation);
+        let sun = mix(Color32::from_rgb(255, 128, 56), Color32::from_rgb(255, 246, 232), high);
+        let blue = Color32::from_rgb(140, 180, 255);
+        let sky = mix(
+            Color32::from_rgb(36, 46, 84),
+            mix(Color32::from_rgb(240, 160, 130), blue, high),
+            day,
+        );
+        let sun_strength = 1.15 * smoothstep(-1.0, 10.0, elevation);
+        let moon_strength = 0.14 * (1.0 - day);
+        let key = if sun_strength >= moon_strength {
+            toward(d, sun_strength, sun, 0.01)
+        } else {
+            let moon = norm([-d[0], -d[1], 0.6]);
+            toward(moon, moon_strength, Color32::from_rgb(170, 190, 255), 0.02)
+        };
+        let bounce = norm([-d[0], -d[1], 0.4]);
+        Lighting {
+            key,
+            fill: toward(bounce, 0.2 * day, blue, 0.5),
+            ambient: 0.1 + 0.32 * day,
+            sky,
+            ground: mix(Color32::from_rgb(40, 40, 46), Color32::from_rgb(130, 122, 104), day),
+            exposure: 1.0 + 1.4 * (1.0 - day),
+            follow: false,
+        }
+    }
+
     pub fn direction(&self, light: &Light, vw: &View) -> V3 {
         let (sa, ca) = light.azimuth.sin_cos();
         let (se, ce) = light.elevation.sin_cos();
@@ -222,6 +344,67 @@ impl Lighting {
         let (sky, ground) = (self.sky(), self.ground());
         let t = (n[2] * 0.5 + 0.5).clamp(0.0, 1.0);
         [0, 1, 2].map(|k| ground[k] + (sky[k] - ground[k]) * t)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Preset {
+    #[default]
+    Studio,
+    Overcast,
+    Outdoor {
+        hour: f32,
+    },
+}
+
+const LATITUDE: f32 = 52.0;
+const DECLINATION: f32 = 12.0;
+
+impl Preset {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Preset::Studio => "indoor studio",
+            Preset::Overcast => "outdoor overcast",
+            Preset::Outdoor { .. } => "outdoor sun",
+        }
+    }
+
+    pub fn lighting(&self) -> Lighting {
+        match *self {
+            Preset::Studio => Lighting::STUDIO,
+            Preset::Overcast => Lighting::OVERCAST,
+            Preset::Outdoor { hour } => Lighting::outdoor(hour),
+        }
+    }
+}
+
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+pub fn sun_direction(hour: f32) -> V3 {
+    let (lat, dec) = (LATITUDE.to_radians(), DECLINATION.to_radians());
+    let angle = ((hour - 12.0) * 15.0).to_radians();
+    [
+        -dec.cos() * angle.sin(),
+        dec.sin() * lat.cos() - dec.cos() * angle.cos() * lat.sin(),
+        dec.sin() * lat.sin() + dec.cos() * angle.cos() * lat.cos(),
+    ]
+}
+
+fn toward(d: V3, intensity: f32, colour: Color32, spread: f32) -> Light {
+    Light {
+        azimuth: d[1].atan2(d[0]),
+        elevation: d[2].clamp(-1.0, 1.0).asin(),
+        intensity,
+        colour,
+        spread,
     }
 }
 
@@ -329,8 +512,15 @@ pub fn palette(index: usize) -> V3 {
     c.map(to_linear)
 }
 
+pub(super) type BatchKey<M> = (usize, M, [Option<usize>; 3]);
+
+pub(super) fn batch_key<M: Material>(scene: &Scene<M>, s: &Surface<M>) -> BatchKey<M> {
+    let image = |i: Option<usize>| i.filter(|i| *i < scene.images.len());
+    (s.group, s.material, [image(s.texture), image(s.normal_map), image(s.metal_rough_map)])
+}
+
 pub(super) fn batches<M: Material>(scene: &Scene<M>) -> (Vec<Option<usize>>, usize) {
-    let mut keys: Vec<(usize, M, Option<usize>)> = Vec::new();
+    let mut keys: Vec<BatchKey<M>> = Vec::new();
     let ids = scene
         .surfaces
         .iter()
@@ -338,7 +528,7 @@ pub(super) fn batches<M: Material>(scene: &Scene<M>) -> (Vec<Option<usize>>, usi
             if s.positions.len() < 3 {
                 return None;
             }
-            let key = (s.group, s.material, s.texture.filter(|t| *t < scene.images.len()));
+            let key = batch_key(scene, s);
             Some(keys.iter().position(|k| *k == key).unwrap_or_else(|| {
                 keys.push(key);
                 keys.len() - 1
@@ -659,7 +849,9 @@ pub struct Viewer<M: Material = ()> {
     cut: Option<Cut>,
     style: Style,
     trace: Option<Trace>,
+    environment: Option<EnvironmentLight>,
     mode: RenderMode,
+    edges: bool,
 }
 
 impl<M: Material> Viewer<M> {
@@ -671,12 +863,37 @@ impl<M: Material> Viewer<M> {
             cut: None,
             style: Style::default(),
             trace: None,
+            environment: None,
             mode: RenderMode::Shaded,
+            edges: true,
         }
+    }
+
+    pub(super) fn ambient(&self) -> (V3, V3) {
+        match &self.environment {
+            Some(e) => (e.up(), e.down()),
+            None => (self.style.lighting.sky(), self.style.lighting.ground()),
+        }
+    }
+
+    pub(super) fn surroundings(&self, n: V3) -> V3 {
+        let (up, down) = self.ambient();
+        let t = (n[2] * 0.5 + 0.5).clamp(0.0, 1.0);
+        [0, 1, 2].map(|k| down[k] + (up[k] - down[k]) * t)
+    }
+
+    pub fn environment(mut self, environment: Option<EnvironmentLight>) -> Viewer<M> {
+        self.environment = environment;
+        self
     }
 
     pub fn mode(mut self, mode: RenderMode) -> Viewer<M> {
         self.mode = mode;
+        self
+    }
+
+    pub fn edges(mut self, on: bool) -> Viewer<M> {
+        self.edges = on;
         self
     }
 

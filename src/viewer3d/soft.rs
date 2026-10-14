@@ -1,5 +1,6 @@
+use super::maps::{perturb, tangents};
 use super::{
-    EMPTY, Image, Material, RenderMode, Shading, Style, V3, View, Viewer, add, batches, cross,
+    EMPTY, Image, Material, Pbr, RenderMode, Style, V3, View, Viewer, add, batches, cross,
     depth_range, dot, grow, norm, palette, placed, rgb, scale, sub, to_linear,
 };
 use egui::{Color32, ColorImage, Vec2};
@@ -32,22 +33,47 @@ fn to_srgb(c: f32) -> f32 {
     if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
-fn shade(albedo: V3, n: V3, v: V3, shading: Shading, style: &Style, lights: &Lights) -> V3 {
-    let n = if dot(n, v) < 0.0 { scale(n, -1.0) } else { n };
-    let ambient = style.lighting.environment(n);
+struct Finish {
+    pbr: Pbr,
+    roughness: f32,
+    metal: f32,
+}
+
+fn facing(n: V3, v: V3) -> V3 {
+    if dot(n, v) < 0.0 { scale(n, -1.0) } else { n }
+}
+
+fn sharpness(roughness: f32) -> f32 {
+    Pbr { roughness, ..Pbr::default() }.sharpness()
+}
+
+fn shade<M: Material>(
+    viewer: &Viewer<M>,
+    albedo: V3,
+    (n, base): (V3, V3),
+    v: V3,
+    finish: &Finish,
+    lights: &Lights,
+) -> V3 {
+    let (n, base) = (facing(n, v), facing(base, v));
+    let ambient = viewer.surroundings(n);
     let (k, f) = (dot(n, lights.key).max(0.0), dot(n, lights.fill).max(0.0));
     let h = norm(add(lights.key, v));
-    let sp = shading.gloss * dot(n, h).max(0.0).powf(shading.sharpness);
+    let p = &finish.pbr;
+    let sp = p.gloss() * dot(n, h).max(1.0e-6).powf(sharpness(finish.roughness));
+    let coat = p.clearcoat * 0.12 * dot(base, h).max(1.0e-6).powf(sharpness(p.clearcoat_roughness));
     [0, 1, 2].map(|c| {
         let d = ambient[c] + lights.key_radiance[c] * k + lights.fill_radiance[c] * f;
-        let shine = 1.0 + (albedo[c] * 1.6 - 1.0) * shading.metal;
-        to_srgb((albedo[c] * d + sp * shine * lights.key_radiance[c]) * lights.exposure)
+        let shine = 1.0 + (albedo[c] * 1.6 - 1.0) * finish.metal;
+        let reflected = (sp * shine + coat) * lights.key_radiance[c];
+        to_srgb((albedo[c] * d + reflected + p.emission[c]) * lights.exposure)
     })
 }
 
-fn cap(style: &Style, normal: V3, lights: &Lights) -> V3 {
+fn cap<M: Material>(viewer: &Viewer<M>, normal: V3, lights: &Lights) -> V3 {
+    let style = &viewer.style;
     let n = norm(normal);
-    let ambient = style.lighting.environment(n);
+    let ambient = viewer.surroundings(n);
     let (k, f) = (dot(n, lights.key).abs(), dot(n, lights.fill).abs());
     let colour = rgb(style.cap);
     [0, 1, 2].map(|c| {
@@ -58,10 +84,16 @@ fn cap(style: &Style, normal: V3, lights: &Lights) -> V3 {
 
 fn sample(image: &Image, u: f32, v: f32) -> V3 {
     let (w, h) = (image.width, image.height);
-    let x = (u * w as f32 - 0.5).clamp(0.0, w as f32 - 1.0);
-    let y = (v * h as f32 - 0.5).clamp(0.0, h as f32 - 1.0);
-    let (x0, y0) = (x as usize, y as usize);
-    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    if w == 0 || h == 0 || image.rgba.len() < w * h * 4 {
+        return [1.0; 3];
+    }
+    let x = u * w as f32 - 0.5;
+    let y = v * h as f32 - 0.5;
+    let (fx0, fy0) = (x.floor(), y.floor());
+    let wrap = |p: f32, n: usize| (p as i64).rem_euclid(n as i64) as usize;
+    let (x0, y0) = (wrap(fx0, w), wrap(fy0, h));
+    let (x1, y1) = (wrap(fx0 + 1.0, w), wrap(fy0 + 1.0, h));
+    let (x, y) = (x0 as f32 + (x - fx0), y0 as f32 + (y - fy0));
     let (fx, fy) = (x - x0 as f32, y - y0 as f32);
     let px = |x: usize, y: usize, k: usize| image.rgba[(y * w + x) * 4 + k] as f32 / 255.0;
     [0, 1, 2].map(|k| {
@@ -82,6 +114,18 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
     let mut depth = vec![f32::INFINITY; w * h];
     let mut colour = vec![background; w * h];
+    if let Some(light) = viewer.environment.as_ref().filter(|e| e.backdrop) {
+        for (i, c) in colour.iter_mut().enumerate() {
+            let (px, py) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+            let d = if ortho {
+                vw.forward
+            } else {
+                let (dx, dy) = ((px - w as f32 * 0.5) / focal, (py - h as f32 * 0.5) / focal);
+                norm(add(add(vw.forward, scale(vw.right, dx)), scale(vw.up, -dy)))
+            };
+            *c = light.radiance(d).map(|k| to_srgb(k * lights.exposure));
+        }
+    }
     let mut layers = vec![0u32; w * h];
     let selected = rgb(style.selected);
     let mode = viewer.mode;
@@ -94,7 +138,11 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
             continue;
         }
         let shading = surface.material.shading();
+        let pbr = surface.material.pbr();
         let image = surface.texture.and_then(|i| viewer.scene.images.get(i));
+        let bumps = surface.normal_map.and_then(|i| viewer.scene.images.get(i));
+        let metal_rough = surface.metal_rough_map.and_then(|i| viewer.scene.images.get(i));
+        let frames = if bumps.is_some() { tangents(surface) } else { Vec::new() };
         let tint = if look.selected && shading.tinted { style.selected_tint } else { 0.0 };
         let base = surface.colour.map(to_linear);
         let positions: Vec<V3> = surface.positions.iter().map(|p| look.place(*p)).collect();
@@ -181,10 +229,10 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                         && look.opacity >= 1.0
                         && let Some(c) = viewer.cut
                     {
-                        colour[i] = cap(&style, c.normal, &lights);
+                        colour[i] = cap(viewer, c.normal, &lights);
                         continue;
                     }
-                    let n = norm(look.turn(lerp(&surface.normals)));
+                    let smooth = norm(look.turn(lerp(&surface.normals)));
                     let uv = |c: usize| {
                         if surface.uvs.len() > t + 2 {
                             (0..3).map(|k| weight[k] * surface.uvs[t + k][c]).sum()
@@ -192,6 +240,26 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                             0.0
                         }
                     };
+                    let n = match bumps {
+                        Some(bumps) if frames.len() > t + 2 => {
+                            let frame: [f32; 4] = std::array::from_fn(|c| {
+                                (0..3).map(|k| weight[k] * frames[t + k][c]).sum()
+                            });
+                            let turned = look.turn([frame[0], frame[1], frame[2]]);
+                            let frame = [turned[0], turned[1], turned[2], frame[3].signum()];
+                            perturb(smooth, frame, sample(bumps, uv(0), uv(1)), pbr.normal_scale)
+                        }
+                        _ => smooth,
+                    };
+                    let (mut roughness, mut metal) = (pbr.roughness, pbr.metallic);
+                    if let Some(map) = metal_rough
+                        && surface.uvs.len() > t + 2
+                    {
+                        let mr = sample(map, uv(0), uv(1));
+                        roughness *= mr[1];
+                        metal *= mr[2];
+                    }
+                    let finish = Finish { pbr, roughness, metal };
                     let albedo = match image {
                         Some(image) if surface.uvs.len() > t + 2 => {
                             sample(image, uv(0), uv(1)).map(to_linear)
@@ -200,7 +268,8 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                     };
                     let albedo = [0, 1, 2].map(|k| albedo[k] + (selected[k] - albedo[k]) * tint);
                     let v = if ortho { scale(vw.forward, -1.0) } else { norm(sub(vw.eye, pos)) };
-                    let lit = |albedo: V3, n: V3| shade(albedo, n, v, shading, &style, &lights);
+                    let lit =
+                        |albedo: V3, n: V3| shade(viewer, albedo, (n, smooth), v, &finish, &lights);
                     colour[i] = match mode {
                         RenderMode::Wireframe => albedo.map(|c| to_srgb(c * 0.6 + 0.3)),
                         RenderMode::Normals => n.map(|c| c * 0.5 + 0.5),
@@ -235,7 +304,7 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
     if mode == RenderMode::Overdraw {
         let heat = [0.1, 0.05, 0.02];
         for (c, n) in colour.iter_mut().zip(&layers) {
-            *c = [0, 1, 2].map(|k| (background[k] + heat[k] * *n as f32).min(1.0));
+            *c = [0, 1, 2].map(|k| (c[k] + heat[k] * *n as f32).min(1.0));
         }
     }
     let mut out = ColorImage::new([width, height], vec![Color32::BLACK; width * height]);

@@ -1,7 +1,7 @@
 use egui_bench::prelude::*;
 use egui_bench::viewer3d::{
-    self, Camera, Cut, Lighting, Lines, Look, Material, Orbit, Painted, RenderMode, Scene, Shading,
-    Surface, Trace, V3, Viewer,
+    self, Camera, Cut, Environment, EnvironmentLight, Lighting, Lines, Look, Material, Orbit,
+    Painted, RenderMode, Scene, Shading, Surface, Trace, V3, Viewer,
 };
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -131,6 +131,8 @@ struct Demo {
     cut: Option<f32>,
     selected: Option<usize>,
     soft: bool,
+    studio: EnvironmentLight,
+    sky: bool,
     lighting: Lighting,
     trace: Trace,
     traced: bool,
@@ -153,6 +155,9 @@ impl eframe::App for Demo {
                 }
                 if let Some(at) = &mut self.cut {
                     ui.add(egui::Slider::new(at, -1.0..=1.0).show_value(false));
+                }
+                if toggle(ui, "studio sky", self.sky).clicked() {
+                    self.sky = !self.sky;
                 }
                 if toggle(ui, "software", self.soft).clicked() {
                     self.soft = !self.soft;
@@ -197,7 +202,8 @@ impl eframe::App for Demo {
                 .cut(cut)
                 .lighting(self.lighting)
                 .trace(self.traced.then_some(self.trace))
-                .mode(self.mode);
+                .mode(self.mode)
+                .environment(self.sky.then(|| self.studio.clone()));
             viewer.navigate(ui, &response, &mut self.orbit);
             if response.double_clicked() {
                 self.camera = Camera { ortho: self.camera.ortho, ..Camera::default() };
@@ -262,6 +268,8 @@ fn main() -> eframe::Result<()> {
                 cut: None,
                 selected: None,
                 soft: false,
+                studio: EnvironmentLight::new(Arc::new(Environment::studio())),
+                sky: false,
                 lighting: Lighting::STUDIO,
                 trace: Trace::default(),
                 traced: false,

@@ -1,7 +1,9 @@
+use super::maps::tangents;
 use super::trace::{self, Frame, Piece, Shot, Target, Traced, Tracer};
 use super::{
-    Aabb, Camera, Cut, EMPTY, Image, Look, Material, Painted, RenderMode, Scene, Style, Trace, V3,
-    View, Viewer, batches, depth_range, dot, grow, palette, placed, rgb, sub, to_linear,
+    Aabb, BatchKey, Camera, Cut, EMPTY, Image, Look, Material, Painted, Pbr, RenderMode, Scene,
+    Style, Trace, V3, View, Viewer, batch_key, batches, depth_range, dot, grow, palette, placed,
+    rgb, sub, to_linear,
 };
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, Ui};
@@ -33,6 +35,9 @@ struct FrameUniform {
     viewport: [f32; 4],
     forward: [f32; 4],
     debug: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    env: [f32; 4],
 }
 
 #[repr(C)]
@@ -41,9 +46,11 @@ struct DrawUniform {
     model: [[f32; 4]; 4],
     normal: [[f32; 4]; 4],
     tint: [f32; 4],
-    gloss: [f32; 4],
+    surface: [f32; 4],
     params: [f32; 4],
     colour: [f32; 4],
+    emission: [f32; 4],
+    coat: [f32; 4],
 }
 
 #[repr(C)]
@@ -54,12 +61,17 @@ struct Vertex {
     colour: [f32; 3],
     uv: [f32; 2],
     pad: f32,
+    tangent: [f32; 4],
 }
 
 struct Batch {
     group: usize,
     shading: super::Shading,
+    pbr: Pbr,
     texture: Option<usize>,
+    normal_map: Option<usize>,
+    metal_rough_map: Option<usize>,
+    bind: wgpu::BindGroup,
     first: u32,
     count: u32,
     aabb: Aabb,
@@ -77,7 +89,6 @@ struct Stroke {
 
 struct Uploaded {
     used: u64,
-    textures: Vec<wgpu::BindGroup>,
     vertices: wgpu::Buffer,
     batches: Vec<Batch>,
     strokes: Vec<Stroke>,
@@ -109,6 +120,12 @@ struct Canvas {
     last: Option<Snapshot>,
 }
 
+struct Sky {
+    used: u64,
+    group: wgpu::BindGroup,
+    traced: Option<trace::SkyBuffers>,
+}
+
 struct Slot {
     used: u64,
     texture: egui::TextureId,
@@ -119,6 +136,8 @@ struct Pipelines {
     frame_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
+    sky_layout: wgpu::BindGroupLayout,
+    backdrop: wgpu::RenderPipeline,
     surface_layout: wgpu::PipelineLayout,
     line_layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
@@ -130,11 +149,13 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
-    anisotropic: bool,
     pipelines: Pipelines,
     tracer: Option<Tracer>,
-    blank: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    white: wgpu::TextureView,
+    flat: wgpu::TextureView,
     scenes: HashMap<u64, Uploaded>,
+    skies: HashMap<u64, Sky>,
     slots: Vec<Slot>,
     pass: u64,
     painted: u64,
@@ -187,22 +208,31 @@ pub fn install(render_state: &egui_wgpu::RenderState) {
         .contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING);
     let pipelines = Pipelines::new(&device);
     let tracer = trace::supported(&device, &render_state.adapter).then(|| Tracer::new(&device));
-    let blank = texture_group(
-        &device,
-        &render_state.queue,
-        &pipelines.texture_layout,
-        &Image { width: 1, height: 1, rgba: vec![255; 4] },
-        anisotropic,
-    );
+    let queue = &render_state.queue;
+    let white = image_view(&device, queue, &Image { width: 1, height: 1, rgba: vec![255; 4] });
+    let flat =
+        image_view(&device, queue, &Image { width: 1, height: 1, rgba: vec![128, 128, 255, 255] });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("viewer3d image"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        anisotropy_clamp: if anisotropic { 8 } else { 1 },
+        ..Default::default()
+    });
     STATE.with(|cell| {
         *cell.borrow_mut() = Some(State {
             queue: render_state.queue.clone(),
             renderer: render_state.renderer.clone(),
-            anisotropic,
             pipelines,
             tracer,
-            blank,
+            sampler,
+            white,
+            flat,
             scenes: HashMap::new(),
+            skies: HashMap::new(),
             slots: Vec::new(),
             pass: 0,
             painted: 0,
@@ -231,6 +261,19 @@ fn uniform_entry(binding: u32, dynamic: bool) -> wgpu::BindGroupLayoutEntry {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: dynamic,
             min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn texture_entry(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
         },
         count: None,
     }
@@ -265,7 +308,13 @@ impl Pipelines {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                texture_entry(2, true),
+                texture_entry(3, true),
             ],
+        });
+        let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("viewer3d sky"),
+            entries: &[texture_entry(1, false)],
         });
         let surface_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("viewer3d surfaces"),
@@ -281,10 +330,48 @@ impl Pipelines {
             label: Some("viewer3d"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
+        let backdrop_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("viewer3d backdrop"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&sky_layout)],
+            immediate_size: 0,
+        });
+        let backdrop = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("viewer3d backdrop"),
+            layout: Some(&backdrop_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("backdrop_vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("backdrop_fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOUR,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+            multiview_mask: None,
+            cache: None,
+        });
         Pipelines {
             frame_layout,
             draw_layout,
             texture_layout,
+            sky_layout,
+            backdrop,
             surface_layout,
             line_layout,
             module,
@@ -296,7 +383,18 @@ impl Pipelines {
     fn surface(&mut self, device: &wgpu::Device, fill: Fill, bias: i32) -> &wgpu::RenderPipeline {
         let (layout, module) = (&self.surface_layout, &self.module);
         self.surfaces.entry((fill, bias)).or_insert_with(|| {
-            let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2];
+            let attribute = |shader_location, format, offset| wgpu::VertexAttribute {
+                format,
+                offset,
+                shader_location,
+            };
+            let attributes = [
+                attribute(0, wgpu::VertexFormat::Float32x3, 0),
+                attribute(1, wgpu::VertexFormat::Float32x3, 12),
+                attribute(2, wgpu::VertexFormat::Float32x3, 24),
+                attribute(3, wgpu::VertexFormat::Float32x2, 36),
+                attribute(4, wgpu::VertexFormat::Float32x4, 48),
+            ];
             pipeline(
                 device,
                 layout,
@@ -445,13 +543,7 @@ fn mip_levels(image: &Image) -> Vec<(u32, u32, Vec<u8>)> {
     levels
 }
 
-fn texture_group(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    image: &Image,
-    anisotropic: bool,
-) -> wgpu::BindGroup {
+fn image_view(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::TextureView {
     let image = if image.width == 0
         || image.height == 0
         || image.rgba.len() < image.width * image.height * 4
@@ -492,27 +584,36 @@ fn texture_group(
             wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
         );
     }
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("viewer3d image"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::MipmapFilterMode::Linear,
-        anisotropy_clamp: if anisotropic { 8 } else { 1 },
-        ..Default::default()
+    texture.create_view(&Default::default())
+}
+
+fn material_group(
+    state: &State,
+    views: &[wgpu::TextureView],
+    maps: [Option<usize>; 3],
+) -> wgpu::BindGroup {
+    let view = |m: Option<usize>, blank| m.and_then(|i| views.get(i)).unwrap_or(blank);
+    let [colour, normal, metal_rough] = maps;
+    let entries = [
+        (0, view(colour, &state.white)),
+        (2, view(normal, &state.flat)),
+        (3, view(metal_rough, &state.white)),
+    ];
+    let mut bound: Vec<wgpu::BindGroupEntry> = entries
+        .iter()
+        .map(|(binding, view)| wgpu::BindGroupEntry {
+            binding: *binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        })
+        .collect();
+    bound.push(wgpu::BindGroupEntry {
+        binding: 1,
+        resource: wgpu::BindingResource::Sampler(&state.sampler),
     });
-    let view = texture.create_view(&Default::default());
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("viewer3d image"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-        ],
+    state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("viewer3d material"),
+        layout: &state.pipelines.texture_layout,
+        entries: &bound,
     })
 }
 
@@ -532,7 +633,7 @@ fn vertex_buffer(state: &State, label: &str, bytes: &[u8]) -> wgpu::Buffer {
 }
 
 struct Gathered<M> {
-    key: (usize, M, Option<usize>),
+    key: BatchKey<M>,
     vertices: Vec<Vertex>,
     aabb: Aabb,
 }
@@ -542,12 +643,10 @@ fn gather<M: Material>(scene: &Scene<M>) -> Vec<Gathered<M>> {
     let mut out: Vec<Option<Gathered<M>>> = (0..count).map(|_| None).collect();
     for (s, id) in scene.surfaces.iter().zip(ids) {
         let Some(id) = id else { continue };
-        let g = out[id].get_or_insert_with(|| Gathered {
-            key: (s.group, s.material, s.texture.filter(|t| *t < scene.images.len())),
-            vertices: Vec::new(),
-            aabb: EMPTY,
-        });
+        let key = batch_key(scene, s);
+        let g = out[id].get_or_insert_with(|| Gathered { key, vertices: Vec::new(), aabb: EMPTY });
         let colour = s.colour.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
+        let tangents = if key.2[1].is_some() { tangents(s) } else { Vec::new() };
         for (i, p) in s.positions.iter().take(s.positions.len() / 3 * 3).enumerate() {
             grow(&mut g.aabb, *p);
             g.vertices.push(Vertex {
@@ -556,6 +655,7 @@ fn gather<M: Material>(scene: &Scene<M>) -> Vec<Gathered<M>> {
                 colour,
                 uv: s.uvs.get(i).copied().unwrap_or_default(),
                 pad: 0.0,
+                tangent: tangents.get(i).copied().unwrap_or_default(),
             });
         }
     }
@@ -564,28 +664,22 @@ fn gather<M: Material>(scene: &Scene<M>) -> Vec<Gathered<M>> {
 
 fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
     let device = &state.device;
-    let textures: Vec<wgpu::BindGroup> = scene
-        .images
-        .iter()
-        .map(|image| {
-            texture_group(
-                device,
-                &state.queue,
-                &state.pipelines.texture_layout,
-                image,
-                state.anisotropic,
-            )
-        })
-        .collect();
+    let views: Vec<wgpu::TextureView> =
+        scene.images.iter().map(|image| image_view(device, &state.queue, image)).collect();
     let gathered = gather(scene);
     let mut all: Vec<Vertex> = Vec::new();
     let mut batches = Vec::with_capacity(gathered.len());
     for g in gathered {
-        let (group, material, texture) = g.key;
+        let (group, material, maps) = g.key;
+        let [texture, normal_map, metal_rough_map] = maps;
         batches.push(Batch {
             group,
             shading: material.shading(),
+            pbr: material.pbr(),
             texture,
+            normal_map,
+            metal_rough_map,
+            bind: material_group(state, &views, maps),
             first: all.len() as u32,
             count: g.vertices.len() as u32,
             aabb: g.aabb,
@@ -628,7 +722,7 @@ fn upload<M: Material>(state: &State, scene: &Scene<M>) -> Uploaded {
             }
         })
         .collect();
-    Uploaded { used: 0, textures, vertices, batches, strokes, traced: None }
+    Uploaded { used: 0, vertices, batches, strokes, traced: None }
 }
 
 fn trace_scene<M: Material>(
@@ -656,8 +750,9 @@ fn trace_scene<M: Material>(
         .map(|(b, triangles)| Piece {
             first: b.first,
             count: b.count,
-            texture: b.texture,
+            maps: [b.texture, b.normal_map, b.metal_rough_map],
             shading: b.shading,
+            pbr: b.pbr,
             triangles,
         })
         .collect();
@@ -721,6 +816,7 @@ impl State {
         self.next = 0;
         let painted = self.painted;
         self.scenes.retain(|_, u| u.used + 1 >= painted);
+        self.skies.retain(|_, s| s.used + 1 >= painted);
         let mut renderer = self.renderer.write();
         self.slots.retain(|s| {
             let keep = s.used + 1 >= painted;
@@ -858,6 +954,55 @@ impl State {
             self.scenes.get_mut(&scene.id).expect("uploaded").traced = Some(made);
         }
         self.scenes.get_mut(&scene.id).expect("uploaded").used = self.painted;
+        if let Some(light) = &viewer.environment {
+            let map = &light.map;
+            if !self.skies.contains_key(&map.id()) {
+                let sky = Sky { used: 0, group: self.sky_group(map), traced: None };
+                self.skies.insert(map.id(), sky);
+            }
+            let sky = self.skies.get_mut(&map.id()).expect("sky");
+            sky.used = self.painted;
+            if traced
+                && sky.traced.is_none()
+                && let Some(tracer) = &self.tracer
+            {
+                sky.traced = Some(tracer.sky(&self.device, &self.queue, map));
+            }
+        }
+    }
+
+    fn sky_group(&self, map: &super::Environment) -> wgpu::BindGroup {
+        let (w, h) = (map.width() as u32, map.height() as u32);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("viewer3d sky"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let texels: Vec<[f32; 4]> = map.rgb().iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        self.queue.write_texture(
+            texture.as_image_copy(),
+            bytemuck::cast_slice(&texels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 16),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&Default::default());
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("viewer3d sky"),
+            layout: &self.pipelines.sky_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        })
     }
 }
 
@@ -923,24 +1068,27 @@ fn draw<M: Material>(
         if !look.visible() {
             continue;
         }
-        let opacity = look.opacity.min(1.0);
+        let opacity = look.opacity.min(1.0) * batch.pbr.raster_opacity();
         let tint = if look.selected && batch.shading.tinted {
             [selected[0], selected[1], selected[2], style.selected_tint]
         } else {
             [0.0; 4]
         };
-        let s = batch.shading;
+        let (s, p) = (batch.shading, batch.pbr);
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
         draws.push(DrawUniform {
             model: columns(&look.placement),
             normal: normal_matrix(&look.placement),
             tint,
-            gloss: [s.gloss, s.sharpness, s.metal, if s.capped { 1.0 } else { 0.0 }],
-            params: [opacity, if batch.texture.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
+            surface: [p.roughness, p.metallic, p.specular, flag(s.capped)],
+            params: [opacity, flag(batch.texture.is_some()), 0.0, flag(batch.normal_map.is_some())],
             colour: match viewer.mode {
                 RenderMode::Groups => four(palette(batch.group), 1.0),
                 RenderMode::Batches => four(palette(i), 1.0),
                 _ => [0.0; 4],
             },
+            emission: four(p.emission, p.normal_scale),
+            coat: [p.clearcoat, p.clearcoat_roughness, flag(batch.metal_rough_map.is_some()), 0.0],
         });
         let box_ = placed(&batch.aabb, &look);
         items.push(Item {
@@ -952,7 +1100,7 @@ fn draw<M: Material>(
     }
     for (i, stroke) in uploaded.strokes.iter().enumerate() {
         let look = viewer.look(stroke.group);
-        if !look.visible() {
+        if !look.visible() || !viewer.edges {
             continue;
         }
         let opacity = (look.opacity * 1.5).min(1.0);
@@ -963,9 +1111,11 @@ fn draw<M: Material>(
             model: columns(&look.placement),
             normal: normal_matrix(&look.placement),
             tint: [0.0; 4],
-            gloss: [0.0; 4],
+            surface: [0.0; 4],
             params: [opacity, 0.0, pixels, 0.0],
             colour: [colour[0], colour[1], colour[2], 1.0],
+            emission: [0.0; 4],
+            coat: [0.0; 4],
         });
         let box_ = placed(&stroke.aabb, &look);
         items.push(Item {
@@ -985,8 +1135,8 @@ fn draw<M: Material>(
         fill: four(lighting.direction(&lighting.fill, &vw), 0.0),
         key_radiance: four(lighting.key.radiance(), 0.0),
         fill_radiance: four(lighting.fill.radiance(), 0.0),
-        sky: four(lighting.sky(), 0.0),
-        ground: four(lighting.ground(), 0.0),
+        sky: four(viewer.ambient().0, 0.0),
+        ground: four(viewer.ambient().1, 0.0),
         cap: {
             let c = rgb(style.cap);
             [c[0], c[1], c[2], 1.0]
@@ -995,6 +1145,12 @@ fn draw<M: Material>(
         viewport: [size[0] as f32, size[1] as f32, if clip.is_some() { 1.0 } else { 0.0 }, 0.0],
         forward: four(vw.forward, 0.0),
         debug: [viewer.mode as u32 as f32, near, far, ppp.max(1.0)],
+        right: four(vw.right, vw.focal),
+        up: four(vw.up, if viewer.camera.ortho { vw.dist } else { 0.0 }),
+        env: viewer
+            .environment
+            .as_ref()
+            .map_or([0.0; 4], |e| [e.turn, e.strength, if e.backdrop { 1.0 } else { 0.0 }, 1.0]),
     };
     let bias = ((widest * 0.5 + 1.0) * 100.0).round() as i32;
     if canvas.capacity < draws.len() as u64 {
@@ -1039,6 +1195,11 @@ fn draw<M: Material>(
             state.scenes.get_mut(&scene.id).expect("uploaded");
         let traced = traced.as_mut().expect("traced");
         let looks: Vec<Look> = batches.iter().map(|b| viewer.look(b.group)).collect();
+        let sky_buffers = viewer
+            .environment
+            .as_ref()
+            .and_then(|e| state.skies.get(&e.map.id()))
+            .and_then(|s| s.traced.as_ref());
         let shot = Shot {
             view: &vw,
             ortho: viewer.camera.ortho,
@@ -1049,8 +1210,15 @@ fn draw<M: Material>(
             heat,
             size,
             instances: looks.len() as u32,
+            ambient: viewer.ambient(),
+            sky: sky_buffers.zip(viewer.environment.as_ref()).map(|(b, e)| trace::Sky {
+                turn: e.turn,
+                strength: e.strength,
+                backdrop: e.backdrop,
+                size: b.size,
+            }),
         };
-        let frame_data = Frame { looks, style: &style, vertices };
+        let frame_data = Frame { looks, style: &style, vertices, sky: sky_buffers };
         if offline {
             while target.samples < trace.samples {
                 let count = trace.per_frame.min(trace.samples - target.samples);
@@ -1159,6 +1327,14 @@ fn draw<M: Material>(
             pass.draw(0..3, 0..1);
         }
         pass.set_bind_group(0, &canvas.frame_group, &[]);
+        if present.is_none()
+            && let Some(light) = viewer.environment.as_ref().filter(|e| e.backdrop)
+            && let Some(sky) = state.skies.get(&light.map.id())
+        {
+            pass.set_pipeline(&state.pipelines.backdrop);
+            pass.set_bind_group(1, &sky.group, &[]);
+            pass.draw(0..3, 0..1);
+        }
         for i in order {
             let item = &items[i];
             let offset = (i as u64 * STRIDE) as u32;
@@ -1166,13 +1342,9 @@ fn draw<M: Material>(
             match item.kind {
                 Kind::Batch(b) => {
                     let batch = &uploaded.batches[b];
-                    let group = batch
-                        .texture
-                        .and_then(|t| uploaded.textures.get(t))
-                        .unwrap_or(&state.blank);
                     let key = (fill(item), bias);
                     pass.set_pipeline(&state.pipelines.surfaces[&key]);
-                    pass.set_bind_group(2, group, &[]);
+                    pass.set_bind_group(2, &batch.bind, &[]);
                     pass.set_vertex_buffer(0, uploaded.vertices.slice(..));
                     pass.draw(batch.first..batch.first + batch.count, 0..1);
                 }

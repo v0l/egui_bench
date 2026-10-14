@@ -45,6 +45,10 @@ required-features = ["viewer3d"]
 name = "trace"
 required-features = ["viewer3d"]
 
+[[test]]
+name = "materials"
+required-features = ["viewer3d"]
+
 [[example]]
 name = "gallery"
 

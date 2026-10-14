@@ -1,7 +1,7 @@
 use egui::{Color32, ColorImage, Pos2, Rect, Vec2};
 use egui_bench::viewer3d::{
-    self, BACKGROUND, Camera, Cut, Image, Lines, Look, Material, RenderMode, Scene, Shading,
-    Surface, V3, Viewer,
+    self, BACKGROUND, Camera, Cut, Image, Lighting, Lines, Look, Material, Preset, RenderMode,
+    Scene, Shading, Surface, V3, Viewer,
 };
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
@@ -258,8 +258,37 @@ fn lines_draw_over_the_faces_they_edge() {
     let hits = (0..SIZE[0]).filter(|x| green(&image.pixels[row * SIZE[0] + x])).count();
     assert!(hits > SIZE[0] / 4, "{hits} green pixels on the middle row");
     let cut = Some(Cut { normal: [1.0, 0.0, 0.0], offset: 0.0 });
-    let half = rendered(Viewer::new(scene, top).cut(cut));
+    let half = rendered(Viewer::new(scene.clone(), top).cut(cut));
     let left = (0..SIZE[0] / 2).filter(|x| green(&half.pixels[row * SIZE[0] + x])).count();
     let right = (SIZE[0] / 2..SIZE[0]).filter(|x| green(&half.pixels[row * SIZE[0] + x])).count();
     assert!(left > 20 && right == 0, "{left} left, {right} right");
+    let bare = rendered(Viewer::new(scene, top).edges(false));
+    let hidden = (0..SIZE[0]).filter(|x| green(&bare.pixels[row * SIZE[0] + x])).count();
+    assert_eq!(hidden, 0, "{hidden} green pixels with edges off");
+}
+
+#[test]
+fn sun_rises_east_peaks_south_sets_west() {
+    let dawn = viewer3d::sun_direction(7.0);
+    let noon = viewer3d::sun_direction(12.0);
+    let dusk = viewer3d::sun_direction(17.0);
+    assert!(dawn[0] > 0.5 && dusk[0] < -0.5);
+    assert!(noon[1] < 0.0 && noon[0].abs() < 1.0e-4);
+    assert!(noon[2] > dawn[2] && noon[2] > dusk[2]);
+    assert!(viewer3d::sun_direction(0.0)[2] < 0.0);
+}
+
+#[test]
+fn outdoor_light_follows_the_sun() {
+    let noon = Lighting::outdoor(12.0);
+    let evening = Lighting::outdoor(19.0);
+    let night = Lighting::outdoor(1.0);
+    assert!(!noon.follow);
+    assert!(noon.key.elevation > evening.key.elevation);
+    assert!(noon.key.intensity > evening.key.intensity);
+    assert!(evening.key.colour.b() < noon.key.colour.b());
+    assert!(night.key.elevation > 0.0 && night.key.intensity < 0.2);
+    assert!(night.exposure > noon.exposure);
+    assert_eq!(Preset::Outdoor { hour: 12.0 }.lighting(), noon);
+    assert_eq!(Preset::default().lighting(), Lighting::STUDIO);
 }

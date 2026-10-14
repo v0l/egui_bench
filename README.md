@@ -235,6 +235,13 @@ without it they stay put in the world, Z up. `Lighting::STUDIO` is the default
 look, and `viewer3d::lighting_controls(ui, &mut lighting)` draws a panel of
 sliders for all of it.
 
+`Preset` names three setups: `Studio`, `Overcast` (soft light from a bright
+cloudy sky) and `Outdoor { hour }`, a sun that rises in the east (+X), peaks
+in the south (-Y) and sets in the west, warm and low at the ends of the day,
+with moonlight and a dark blue sky at night. `Preset::lighting()` gives the
+`Lighting`, and `viewer3d::preset_controls(ui, &mut preset)` is a picker with
+a time of day slider.
+
 ```rust,ignore
 let viewer = Viewer::new(scene, camera).lighting(self.lighting);
 ```
@@ -248,6 +255,7 @@ draws as usual; once still, it adds `per_frame` samples a frame until it has
 `samples`, and swaps to the traced picture after the first 16. Edges and
 polylines are still drawn on top, cuts are capped, and see-through parts let
 light through. `paint` returns a `Painted` saying how far it has got.
+`Viewer::edges(false)` leaves the `Lines` out, in this and every other mode.
 
 On GPUs with ray tracing hardware it uses wgpu's ray queries, which egui's
 device does not ask for by default. Request them in the app's options:
@@ -266,6 +274,52 @@ Without them it traces a BVH in a compute shader, which gives the same picture
 much more slowly, so keep `per_frame` low there. `viewer3d::hardware_tracing()`
 says which one you got, and `Viewer::render_gpu(w, h)` renders a still at any
 size on the GPU, with every sample taken when tracing.
+
+#### Materials
+
+`Shading` is the quick way to say how a material looks. For more, implement
+`Material::pbr` and return a `Pbr`: `roughness`, `metallic`, `specular`
+(0.5 is the usual 4% reflection of plastic and paint), `emission` (linear
+radiance, so a lamp glows and lights what is near it), `transmission` and
+`ior` for glass that refracts, and `clearcoat` with its own
+`clearcoat_roughness` for lacquer over a base colour. Without an override,
+`pbr()` is worked out from `shading()`.
+
+```rust,ignore
+impl Material for Finish {
+    fn pbr(&self) -> Pbr {
+        match self {
+            Finish::Glass => Pbr { transmission: 1.0, roughness: 0.02, ..Pbr::default() },
+            Finish::Chrome => Pbr { metallic: 1.0, roughness: 0.08, ..Pbr::default() },
+            Finish::Paint => Pbr { clearcoat: 1.0, roughness: 0.6, ..Pbr::default() },
+            _ => self.shading().pbr(),
+        }
+    }
+}
+```
+
+A `Surface` can also carry a `normal_map` and a `metal_rough_map` (glTF
+layout: roughness in green, metal in blue, both multiplying the `Pbr`
+values), as indexes into `Scene::images`. Tangents are worked out from the
+UVs. `Image::normal_from_height(strength)` turns a grey height map into a
+normal map, which is how to do bump mapping. Textures repeat outside 0..1.
+
+The tracer does all of it properly. The raster view and the software
+renderer do normal and metal/rough maps, emission and the clear coat
+highlight, and draw glass see-through; reflections, refraction and light
+from glowing surfaces only show once traced.
+
+#### Environment
+
+`Viewer::environment(Some(EnvironmentLight::new(map)))` lights the scene from
+an image all around it instead of the sky and ground colours, with `turn`
+about Z, `strength`, and `backdrop` to show it behind the model.
+`Environment::from_hdr(bytes)` reads a Radiance `.hdr` panorama (Z up, the
+top row overhead), `Environment::new(w, h, rgb)` takes linear pixels, and
+`Environment::studio()` is a dark room with three softboxes, good for metal
+and glass. The tracer samples bright parts of the map directly, so a small
+sun in an HDR does not turn into noise. The raster view lights from the
+map's average above and below and draws the backdrop.
 
 #### Debug views
 

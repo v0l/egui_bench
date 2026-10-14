@@ -301,3 +301,39 @@ fn render_gpu_without_a_trace_is_the_raster_view() {
         .count();
     assert!(far < gpu.pixels.len() / 50, "{far} pixels differ");
 }
+
+#[test]
+fn glass_lets_the_plate_and_its_sunlight_through() {
+    let _gpu = serial();
+    for hardware in [false, true] {
+        if device(hardware).is_none() {
+            continue;
+        }
+        let scene = Arc::new(Scene {
+            surfaces: vec![
+                cuboid([-2.0, -1.5, -0.1], [2.0, 1.5, 0.0], 0, [0.8, 0.2, 0.2]),
+                cuboid([-1.0, -1.0, 0.5], [1.0, 1.0, 0.52], 1, [0.6, 0.8, 0.85]),
+            ],
+            radius: 2.2,
+            ..Default::default()
+        });
+        let glass = [Look::default(), Look { opacity: 0.25, ..Look::default() }];
+        let viewer = Viewer::new(scene, top()).lighting(sun()).looks(glass).trace(Some(Trace {
+            samples: 64,
+            bounces: 2,
+            per_frame: 16,
+        }));
+        let image = viewer.render_gpu(SIZE[0], SIZE[1]).unwrap();
+        let at = Projector::new(viewer.scene(), &top(), rect());
+        let open = pixel(&image, at.project([1.8, 1.3, 0.0]).unwrap());
+        let behind = pixel(&image, at.project([0.4, 0.0, 0.0]).unwrap());
+        assert!(
+            behind.r() as f32 > open.r() as f32 * 0.8,
+            "hardware {hardware}: open {open:?}, under the glass {behind:?}"
+        );
+        assert!(
+            behind.r() as i32 - behind.g() as i32 > (open.r() as i32 - open.g() as i32) / 2,
+            "hardware {hardware}: open {open:?}, under the glass {behind:?}"
+        );
+    }
+}

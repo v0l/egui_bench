@@ -1,5 +1,6 @@
+use super::environment::{Environment, sampling};
 use super::gpu::{COLOUR, DEPTH, SAMPLES, columns, normal_matrix};
-use super::{Cut, Image, Look, Placement, Shading, Style, Trace, V3, View, rgb, to_linear};
+use super::{Cut, Image, Look, Pbr, Placement, Shading, Style, Trace, V3, View, rgb, to_linear};
 use bytemuck::{Pod, Zeroable};
 
 const LEAF: usize = 4;
@@ -102,6 +103,15 @@ pub(super) struct Params {
     clip: [f32; 4],
     counts: [u32; 4],
     size: [u32; 4],
+    env: [f32; 4],
+    env_size: [u32; 4],
+}
+
+pub(super) struct Sky {
+    pub turn: f32,
+    pub strength: f32,
+    pub backdrop: bool,
+    pub size: [u32; 2],
 }
 
 pub(super) struct Shot<'a> {
@@ -114,6 +124,8 @@ pub(super) struct Shot<'a> {
     pub heat: bool,
     pub size: [u32; 2],
     pub instances: u32,
+    pub ambient: (V3, V3),
+    pub sky: Option<Sky>,
 }
 
 fn four(v: V3, w: f32) -> [f32; 4] {
@@ -135,13 +147,17 @@ impl Params {
             key_radiance: four(l.key.radiance(), l.key.spread.max(0.0)),
             fill: four(l.direction(&l.fill, vw), 0.0),
             fill_radiance: four(l.fill.radiance(), l.fill.spread.max(0.0)),
-            sky: four(l.sky(), 0.0),
-            ground: four(l.ground(), 0.0),
+            sky: four(shot.ambient.0, 0.0),
+            ground: four(shot.ambient.1, 0.0),
             background: four(background, l.exposure),
             cap: four(cap, if shot.cut.is_some() { 1.0 } else { 0.0 }),
             clip,
             counts: [base, count, shot.trace.bounces.max(1), shot.instances],
             size: [shot.size[0], shot.size[1], stamp, shot.heat as u32],
+            env: shot.sky.as_ref().map_or([0.0; 4], |s| {
+                [s.turn, s.strength, if s.backdrop { 1.0 } else { 0.0 }, 1.0]
+            }),
+            env_size: shot.sky.as_ref().map_or([1, 1, 0, 0], |s| [s.size[0], s.size[1], 0, 0]),
         }
     }
 }
@@ -155,11 +171,16 @@ pub(super) struct Instance {
     tint: [f32; 4],
     surface: [f32; 4],
     refs: [u32; 4],
+    light: [f32; 4],
+    glass: [f32; 4],
+    maps: [u32; 4],
 }
 
 const CAPPED: u32 = 1;
 const VISIBLE: u32 = 2;
 const TEXTURED: u32 = 4;
+const NORMAL_MAPPED: u32 = 8;
+const METAL_ROUGH: u32 = 16;
 
 fn inverse(m: &Placement) -> [[f32; 4]; 4] {
     let n = normal_matrix(m);
@@ -177,8 +198,9 @@ fn inverse(m: &Placement) -> [[f32; 4]; 4] {
 pub(super) struct Part {
     pub first: u32,
     pub root: u32,
-    pub texture: Option<usize>,
+    pub maps: [Option<usize>; 3],
     pub shading: Shading,
+    pub pbr: Pbr,
 }
 
 impl Instance {
@@ -190,18 +212,36 @@ impl Instance {
         } else {
             [0.0; 4]
         };
-        let roughness = (2.0 / (s.sharpness.max(0.0) + 2.0)).sqrt().clamp(0.03, 1.0);
-        let f0 = 0.04 * (s.gloss / 0.12).clamp(0.0, 2.5);
-        let flags = if s.capped { CAPPED } else { 0 }
-            | if look.visible() { VISIBLE } else { 0 }
-            | if part.texture.is_some() { TEXTURED } else { 0 };
+        let p = part.pbr;
+        let [texture, normal_map, metal_rough] = part.maps;
+        let f0 = 0.08 * p.specular.clamp(0.0, 2.5);
+        let flag = |on: bool, bit: u32| if on { bit } else { 0 };
+        let flags = flag(s.capped, CAPPED)
+            | flag(look.visible(), VISIBLE)
+            | flag(texture.is_some(), TEXTURED)
+            | flag(normal_map.is_some(), NORMAL_MAPPED)
+            | flag(metal_rough.is_some(), METAL_ROUGH);
+        let index = |m: Option<usize>| m.unwrap_or(0) as u32;
         Instance {
             world: columns(&look.placement),
             inverse: inverse(&look.placement),
             normal: normal_matrix(&look.placement),
             tint,
-            surface: [f0, roughness, s.metal.clamp(0.0, 1.0), look.opacity.min(1.0)],
-            refs: [part.first, part.texture.unwrap_or(0) as u32, part.root, flags],
+            surface: [
+                f0,
+                p.roughness.clamp(0.0, 1.0),
+                p.metallic.clamp(0.0, 1.0),
+                look.opacity.min(1.0),
+            ],
+            refs: [part.first, index(texture), part.root, flags],
+            light: [p.emission[0], p.emission[1], p.emission[2], p.normal_scale],
+            glass: [
+                p.transmission.clamp(0.0, 1.0),
+                p.ior,
+                p.clearcoat.clamp(0.0, 1.0),
+                p.clearcoat_roughness.clamp(0.0, 1.0),
+            ],
+            maps: [index(normal_map), index(metal_rough), 0, 0],
         }
     }
 }
@@ -280,6 +320,7 @@ pub(super) struct Tracer {
     pipeline: wgpu::ComputePipeline,
     present_layout: wgpu::BindGroupLayout,
     pub present: wgpu::RenderPipeline,
+    no_sky: wgpu::Buffer,
 }
 
 pub(super) fn supported(device: &wgpu::Device, adapter: &wgpu::Adapter) -> bool {
@@ -298,6 +339,7 @@ impl Tracer {
             storage(3, true, compute),
             storage(4, true, compute),
             storage(5, true, compute),
+            storage(8, true, compute),
         ];
         if hardware {
             entries.push(wgpu::BindGroupLayoutEntry {
@@ -385,7 +427,13 @@ impl Tracer {
             multiview_mask: None,
             cache: None,
         });
-        Tracer { hardware, layout, pipeline, present_layout, present }
+        let no_sky = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("viewer3d no sky"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        Tracer { hardware, layout, pipeline, present_layout, present, no_sky }
     }
 }
 
@@ -423,8 +471,9 @@ pub(super) struct Traced {
 pub(super) struct Piece<'a> {
     pub first: u32,
     pub count: u32,
-    pub texture: Option<usize>,
+    pub maps: [Option<usize>; 3],
     pub shading: Shading,
+    pub pbr: Pbr,
     pub triangles: &'a [[V3; 3]],
 }
 
@@ -456,8 +505,9 @@ impl Traced {
             parts.push(Part {
                 first: piece.first,
                 root,
-                texture: piece.texture,
+                maps: piece.maps,
                 shading: piece.shading,
+                pbr: piece.pbr,
             });
         }
         let nodes = (!tracer.hardware).then(|| {
@@ -521,7 +571,7 @@ impl Traced {
                             size,
                             vertex_buffer: vertices,
                             first_vertex: piece.first,
-                            vertex_stride: 48,
+                            vertex_stride: 64,
                             index_buffer: None,
                             first_index: None,
                             transform_buffer: None,
@@ -597,9 +647,37 @@ pub(super) struct Frame<'a> {
     pub looks: Vec<Look>,
     pub style: &'a Style,
     pub vertices: &'a wgpu::Buffer,
+    pub sky: Option<&'a SkyBuffers>,
+}
+
+pub(super) struct SkyBuffers {
+    data: wgpu::Buffer,
+    pub size: [u32; 2],
 }
 
 impl Tracer {
+    pub(super) fn sky(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        map: &Environment,
+    ) -> SkyBuffers {
+        let tables = sampling(map);
+        let mut data: Vec<f32> = map.rgb().iter().flatten().copied().collect();
+        data.extend(&tables.marginal);
+        data.extend(&tables.conditional);
+        SkyBuffers {
+            data: buffer_with(
+                device,
+                queue,
+                "viewer3d sky",
+                bytemuck::cast_slice(&data),
+                wgpu::BufferUsages::STORAGE,
+            ),
+            size: [map.width() as u32, map.height() as u32],
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch(
         &self,
@@ -638,6 +716,10 @@ impl Tracer {
             wgpu::BindGroupEntry { binding: 3, resource: traced.instances.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 4, resource: traced.texels.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 5, resource: traced.pictures.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: frame.sky.map_or(&self.no_sky, |s| &s.data).as_entire_binding(),
+            },
         ];
         if let Some(accel) = &traced.accel {
             entries.push(wgpu::BindGroupEntry { binding: 6, resource: accel.tlas.as_binding() });

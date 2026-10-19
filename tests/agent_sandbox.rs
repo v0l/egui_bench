@@ -10,7 +10,7 @@ fn main() {
         std::process::exit(code);
     }
     let mut failed = Vec::new();
-    let cases: [(&str, fn()); 9] = [
+    let cases: [(&str, fn()); 11] = [
         ("a command writes inside the workspace and its scratch", writes_inside),
         ("a command cannot write outside the workspace", cannot_write_outside),
         ("a command cannot read what is outside the workspace", cannot_read_outside),
@@ -20,6 +20,8 @@ fn main() {
         ("without a plan the helper refuses to run", refuses_without_a_plan),
         ("a shared folder is readable and writable only as far as shared", shared_folders),
         ("a share does not widen to its neighbours", a_share_stays_where_it_was_put),
+        ("names still resolve, since the network is open", names_resolve),
+        ("a compiler runs without the system temp folder being opened", a_compiler_runs),
     ];
     for (name, case) in cases {
         match std::panic::catch_unwind(case) {
@@ -34,6 +36,10 @@ fn main() {
         eprintln!("{} failed: {failed:?}", failed.len());
         std::process::exit(1);
     }
+}
+
+fn refused(text: &str) -> bool {
+    text.contains("Permission denied") || text.contains("Operation not permitted")
 }
 
 struct Rig {
@@ -133,7 +139,7 @@ fn cannot_write_outside() {
     }
     let target = rig.outside.join("new.txt");
     let (_, out) = rig.run(&format!("echo x > {}", target.display()));
-    assert!(out.contains("Permission denied"), "{out}");
+    assert!(refused(&out), "{out}");
     assert!(!target.exists());
     let (_, out) = rig.run("echo x > /etc/egui-bench-sandbox-test");
     assert!(!Path::new("/etc/egui-bench-sandbox-test").exists(), "{out}");
@@ -145,11 +151,11 @@ fn cannot_read_outside() {
         return;
     }
     let (_, out) = rig.run(&format!("cat {}", rig.outside.join("secret.txt").display()));
-    assert!(out.contains("Permission denied"), "{out}");
+    assert!(refused(&out), "{out}");
     assert!(!out.contains("TOPSECRET"));
     if let Some(home) = std::env::var_os("HOME") {
         let (_, out) = rig.run(&format!("ls {}", Path::new(&home).display()));
-        assert!(out.contains("Permission denied"), "{out}");
+        assert!(refused(&out), "{out}");
     }
 }
 
@@ -204,7 +210,7 @@ fn shared_folders() {
         return;
     }
     let (code, out) = rig.run(&format!("cat {}", rig.outside.join("secret.txt").display()));
-    assert!(out.contains("Permission denied") && code != 0 || !out.contains("TOPSECRET"), "{out}");
+    assert!(refused(&out) && code != 0 || !out.contains("TOPSECRET"), "{out}");
 
     let read_only = [(rig.outside.as_path(), false)];
     let (_, out) =
@@ -212,7 +218,7 @@ fn shared_folders() {
     assert_eq!(out, "TOPSECRET", "a read only share must be readable: {out}");
     let target = rig.outside.join("new.txt");
     let (_, out) = rig.run_with(&format!("echo x > {}", target.display()), &read_only);
-    assert!(out.contains("Permission denied"), "{out}");
+    assert!(refused(&out), "{out}");
     assert!(!target.exists(), "a read only share must not be writable");
 
     let writable = [(rig.outside.as_path(), true)];
@@ -236,10 +242,49 @@ fn a_share_stays_where_it_was_put() {
     let (_, out) = rig.run_with(&format!("cat {}", shared.join("a.txt").display()), &share);
     assert_eq!(out, "A");
     let (_, out) = rig.run_with(&format!("cat {}", neighbour.join("b.txt").display()), &share);
-    assert!(out.contains("Permission denied") && !out.contains('B'), "{out}");
+    assert!(refused(&out) && !out.contains('B'), "{out}");
     let (_, out) = rig.run_with(&format!("ls {}", rig.root.display()), &share);
-    assert!(out.contains("Permission denied"), "{out}");
+    assert!(refused(&out), "{out}");
     let (_, out) =
         rig.run_with(&format!("echo x > {}", rig.root.join("top.txt").display()), &share);
-    assert!(out.contains("Permission denied"), "{out}");
+    assert!(refused(&out), "{out}");
+}
+
+fn names_resolve() {
+    let rig = Rig::new("dns");
+    if !rig.usable() {
+        return;
+    }
+    if !network_is_up() {
+        eprintln!("no network here, skipping");
+        return;
+    }
+    let (_, out) =
+        rig.run("curl -sS -m 10 -o /dev/null -w '%{http_code}' https://example.com 2>&1");
+    assert_eq!(out.trim(), "200", "names must still resolve inside the sandbox: {out}");
+}
+
+fn network_is_up() -> bool {
+    std::net::ToSocketAddrs::to_socket_addrs(&("example.com", 443))
+        .map(|mut a| a.next().is_some())
+        .unwrap_or(false)
+}
+
+fn a_compiler_runs() {
+    let rig = Rig::new("cc");
+    if !rig.usable() {
+        return;
+    }
+    if !Command::new("cc").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        eprintln!("no C compiler here, skipping");
+        return;
+    }
+    fs::write(rig.workspace.join("a.c"), "int main(void) { return 7; }\n").unwrap();
+    let (code, out) = rig.run("cc a.c -o a && ./a; echo rc=$?");
+    assert!(out.contains("rc=7"), "a compiler must work inside the sandbox ({code}): {out}");
+    let (_, out) = rig.run("ls /private/var/folders 2>&1 | head -1; cat /etc/passwd | head -0");
+    #[cfg(target_os = "macos")]
+    assert!(!out.contains("zz") && refused(&out), "the system temp folder stays closed: {out}");
+    #[cfg(not(target_os = "macos"))]
+    let _ = out;
 }

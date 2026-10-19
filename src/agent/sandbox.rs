@@ -81,6 +81,23 @@ mod enforce {
                 false => caps,
             };
         }
+        platform_rules(caps)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_rules(caps: CapabilitySet) -> nono::Result<CapabilitySet> {
+        const RULES: [&str; 5] = [
+            "(allow file-read-metadata (literal \"/var\"))",
+            "(allow file-read-metadata (literal \"/private/var\"))",
+            "(allow file-read* (subpath \"/private/var/select\"))",
+            "(allow file-read-metadata (regex #\"^/private/var/folders(/[^/]+(/[^/]+(/T)?)?)?$\"))",
+            "(allow file-read* file-write* (regex #\"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db\"))",
+        ];
+        RULES.iter().try_fold(caps, |caps, rule| caps.platform_rule(*rule))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn platform_rules(caps: CapabilitySet) -> nono::Result<CapabilitySet> {
         Ok(caps)
     }
 

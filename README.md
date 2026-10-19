@@ -32,7 +32,7 @@ panel legends (uppercase, tracked out, silkscreen), mono semibold for figures
 
 ```toml
 [dependencies]
-egui_bench = "0.4"
+egui_bench = "0.5"
 ```
 
 ```rust,ignore

@@ -258,6 +258,24 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
+pub fn fetch_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut res = agent()
+        .get(url)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| format!("{url}: {e}"))?;
+    let status = res.status().as_u16();
+    if status != 200 {
+        return Err(match status {
+            404 => format!("{url} is not there"),
+            _ => format!("{url}: answered {status}"),
+        });
+    }
+    res.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))
+}
+
 pub fn fetch_text(url: &str, limit: u64) -> Result<String, String> {
     let mut res = agent()
         .get(url)

@@ -524,14 +524,24 @@ pub fn replace(new: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn replace_self(new: &Path) -> Result<(), String> {
+pub fn running_exe() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = fs::canonicalize(&exe).unwrap_or(exe);
-    replace(new, &exe)
+    Ok(strip_replaced(&fs::canonicalize(&exe).unwrap_or(exe)))
+}
+
+pub fn strip_replaced(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let text = text.strip_suffix(" (deleted)").unwrap_or(&text);
+    let text = text.strip_suffix(".old").unwrap_or(text);
+    PathBuf::from(text)
+}
+
+pub fn replace_self(new: &Path) -> Result<(), String> {
+    replace(new, &running_exe()?)
 }
 
 pub fn relaunch() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = running_exe()?;
     let mut cmd = Command::new(exe);
     cmd.args(std::env::args_os().skip(1));
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -718,6 +728,40 @@ mod tests {
         sweep(&dir);
         let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["tool.exe"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_running_binary_that_was_replaced_is_still_named_by_its_own_path() {
+        let at = |p: &str| strip_replaced(Path::new(p));
+        assert_eq!(at("/opt/suite/bench-suite"), PathBuf::from("/opt/suite/bench-suite"));
+        assert_eq!(at("/opt/suite/bench-suite.old"), PathBuf::from("/opt/suite/bench-suite"));
+        assert_eq!(at("/opt/suite/bench-suite (deleted)"), PathBuf::from("/opt/suite/bench-suite"));
+        assert_eq!(
+            at("/opt/suite/bench-suite.old (deleted)"),
+            PathBuf::from("/opt/suite/bench-suite")
+        );
+        assert_eq!(at("/opt/suite/tool.old.exe"), PathBuf::from("/opt/suite/tool.old.exe"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_second_update_after_the_first_does_not_look_for_the_old_file() {
+        let dir = scratch("twice");
+        let app = dir.join("app");
+        fs::copy("/bin/sleep", &app).unwrap();
+        let mut running = std::process::Command::new(&app).arg("20").spawn().unwrap();
+        let seen = || fs::read_link(format!("/proc/{}/exe", running.id())).unwrap();
+        assert_eq!(seen(), app.canonicalize().unwrap());
+
+        let next = dir.join("next");
+        fs::copy("/bin/sleep", &next).unwrap();
+        replace(&next, &app).unwrap();
+        assert!(app.exists(), "the new binary is at the original path");
+        assert_ne!(seen(), app.canonicalize().unwrap(), "the running one now reports a stale path");
+        assert_eq!(strip_replaced(&seen()), app.canonicalize().unwrap());
+        let _ = running.kill();
+        let _ = running.wait();
         fs::remove_dir_all(&dir).unwrap();
     }
 

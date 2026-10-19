@@ -216,8 +216,11 @@ fn inlines(events: &[Event], at: &mut usize) -> Vec<Span> {
         };
     while let Some(event) = events.get(*at) {
         match event {
-            Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
-                push(t, false, bold, italic, strike, links.last())
+            Event::Text(t) => push(t, false, bold, italic, strike, links.last()),
+            Event::Html(t) | Event::InlineHtml(t) => {
+                if is_line_break(t) {
+                    push("\n", false, bold, italic, strike, links.last());
+                }
             }
             Event::Code(t) => push(t, true, bold, italic, strike, links.last()),
             Event::SoftBreak => push(" ", false, bold, italic, strike, links.last()),
@@ -246,6 +249,72 @@ fn inlines(events: &[Event], at: &mut usize) -> Vec<Span> {
     out
 }
 
+fn is_line_break(tag: &str) -> bool {
+    let t = tag.trim().to_ascii_lowercase();
+    t.starts_with("<br") && t.ends_with('>')
+}
+
+pub fn resolve(url: &str, base: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() || url.starts_with('#') || url.contains("://") || url.starts_with("mailto:") {
+        return url.to_string();
+    }
+    let (root, path) = match base.split_once("://") {
+        Some((scheme, rest)) => match rest.split_once('/') {
+            Some((host, path)) => (format!("{scheme}://{host}"), path.to_string()),
+            None => (format!("{scheme}://{rest}"), String::new()),
+        },
+        None => return url.to_string(),
+    };
+    let mut parts: Vec<&str> = match url.starts_with('/') {
+        true => Vec::new(),
+        false => path.split('/').filter(|p| !p.is_empty()).collect(),
+    };
+    let relative = url.trim_start_matches('/');
+    let (path_part, tail) = match relative.find(['?', '#']) {
+        Some(i) => relative.split_at(i),
+        None => (relative, ""),
+    };
+    for segment in path_part.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    format!("{root}/{}{tail}", parts.join("/"))
+}
+
+fn resolved(blocks: Vec<Block>, base: &str) -> Vec<Block> {
+    let fix = |spans: Vec<Span>| -> Vec<Span> {
+        spans
+            .into_iter()
+            .map(|mut s| {
+                s.link = s.link.map(|l| resolve(&l, base));
+                s
+            })
+            .collect()
+    };
+    blocks
+        .into_iter()
+        .map(|b| match b {
+            Block::Paragraph(s) => Block::Paragraph(fix(s)),
+            Block::Heading(l, s) => Block::Heading(l, fix(s)),
+            Block::Quote(inner) => Block::Quote(resolved(inner, base)),
+            Block::List { start, items } => {
+                Block::List { start, items: items.into_iter().map(|i| resolved(i, base)).collect() }
+            }
+            Block::Table { head, rows } => Block::Table {
+                head: head.into_iter().map(&fix).collect(),
+                rows: rows.into_iter().map(|r| r.into_iter().map(&fix).collect()).collect(),
+            },
+            other => other,
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub struct Cache {
     parsed: HashMap<u64, Arc<Vec<Block>>>,
@@ -254,11 +323,25 @@ pub struct Cache {
 
 impl Cache {
     pub fn get(&mut self, text: &str) -> Arc<Vec<Block>> {
+        self.get_at(text, None)
+    }
+
+    pub fn get_at(&mut self, text: &str, base: Option<&str>) -> Arc<Vec<Block>> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut hasher);
+        base.hash(&mut hasher);
         let key = hasher.finish();
         self.used.insert(key);
-        self.parsed.entry(key).or_insert_with(|| Arc::new(parse(text))).clone()
+        self.parsed
+            .entry(key)
+            .or_insert_with(|| {
+                let blocks = parse(text);
+                Arc::new(match base {
+                    Some(base) => resolved(blocks, base),
+                    None => blocks,
+                })
+            })
+            .clone()
     }
 
     pub fn sweep(&mut self) {
@@ -276,7 +359,11 @@ impl Cache {
 }
 
 pub fn show(ui: &mut Ui, cache: &mut Cache, text: &str, salt: usize) {
-    let parsed = cache.get(text);
+    show_at(ui, cache, text, salt, None);
+}
+
+pub fn show_at(ui: &mut Ui, cache: &mut Cache, text: &str, salt: usize, base: Option<&str>) {
+    let parsed = cache.get_at(text, base);
     ui.push_id(("markdown", salt), |ui| render(ui, &parsed));
 }
 
@@ -589,6 +676,44 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(plain(&rows[0][0]), "*.sch.toml");
         assert!(rows[0][0][0].style.code);
+    }
+
+    #[test]
+    fn html_tags_are_not_drawn_as_text_and_a_break_is_a_break() {
+        let blocks =
+            parse("<img src=\"a.svg\" width=\"64\">\n\n# Title\n\nline<br>next <b>bold</b>\n");
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph(s) | Block::Heading(_, s) => Some(plain(s)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(!text.contains('<') && !text.contains("img"), "{text}");
+        assert!(text.contains("Title") && text.contains("line\nnext bold"), "{text}");
+    }
+
+    #[test]
+    fn relative_links_are_made_whole_against_where_the_document_lives() {
+        let base = "https://github.com/v0l/gcad/blob/HEAD/";
+        let at = |u: &str| resolve(u, base);
+        assert_eq!(
+            at("docs/simulation.md"),
+            "https://github.com/v0l/gcad/blob/HEAD/docs/simulation.md"
+        );
+        assert_eq!(at("./LICENSE"), "https://github.com/v0l/gcad/blob/HEAD/LICENSE");
+        assert_eq!(at("/LICENSE"), "https://github.com/LICENSE");
+        assert_eq!(at("../x.md"), "https://github.com/v0l/gcad/blob/x.md");
+        assert_eq!(at("docs/a.md#part"), "https://github.com/v0l/gcad/blob/HEAD/docs/a.md#part");
+        assert_eq!(at("https://example.com/a"), "https://example.com/a");
+        assert_eq!(at("mailto:a@b"), "mailto:a@b");
+        assert_eq!(at("#heading"), "#heading");
+        let blocks = Cache::default()
+            .get_at("See [the docs](docs/a.md) and [site](https://x.y).", Some(base));
+        let Block::Paragraph(p) = &blocks[0] else { panic!("{blocks:?}") };
+        let links: Vec<&str> = p.iter().filter_map(|s| s.link.as_deref()).collect();
+        assert_eq!(links, ["https://github.com/v0l/gcad/blob/HEAD/docs/a.md", "https://x.y"]);
     }
 
     #[test]

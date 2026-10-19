@@ -1,10 +1,14 @@
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(feature = "agent", not(target_arch = "wasm32")))]
+pub mod agent;
 pub mod browser;
 pub mod comb;
 pub mod drop;
 pub mod form;
 pub mod key;
+#[cfg(feature = "markdown")]
+pub mod markdown;
 pub mod meter;
 pub mod panel;
 pub mod readout;

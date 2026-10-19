@@ -32,7 +32,7 @@ panel legends (uppercase, tracked out, silkscreen), mono semibold for figures
 
 ```toml
 [dependencies]
-egui_bench = "0.2"
+egui_bench = "0.4"
 ```
 
 ```rust,ignore
@@ -109,6 +109,63 @@ lays one out; `key.paint(ui, rect)` puts it in a rect you have measured, with
 `.id_salt(..)` keeping its focus when the layout shifts. `busy(ui, rect, done,
 label, tint)` is the same shape filling with progress, or sweeping when the end
 is unknown, so a key can turn into its own progress bar.
+
+### `markdown` - agent replies as a panel (feature `markdown`)
+
+`markdown::show(ui, &mut cache, text, salt)` draws CommonMark in the panel's faces:
+headings, bold, italic, strikethrough, inline code, fenced blocks with a copy key,
+tables, nested and task lists, quotes, rules and links. Links open only if they are
+http, https or mailto. The `Cache` parses a reply once and forgets it when it stops
+being drawn, and an unfinished fence while a reply streams is already a code block.
+
+### `agent` - a coding agent in a window (feature `agent`)
+
+A chat with any OpenAI-compatible server that has tool calls, filling the central
+panel, with a workspace folder the model reads and writes in. It brings the loop,
+the pane, the settings page and these tools: `load_skill` (reads `SKILL.md` files
+from `~/.agents/skills` and the workspace), `list_files`, `read_file`, `write_file`,
+`edit_file`, `search_files`, `workspace`, `request_access` and `bash`. File tools cannot
+leave the workspace unless the user shares a folder: `request_access` puts the path and the
+model's reason in a card, and the user picks read only, read and write, or deny. A share
+covers that folder and what is under it, never its parent or neighbours, follows no link out
+of itself, and ends when the chat is cleared or the user clicks it away. Credential folders
+(`~/.ssh`, `~/.aws`, browser profiles, the app's own config), the whole home folder and a
+drive root are refused without asking. `Agent::needs_you()` says when a card is waiting, so
+the app can flag its tab. `bash` runs in an OS sandbox through `nono` (Landlock on Linux, Seatbelt
+on macOS): the system and the tools are readable, only the workspace and a scratch
+folder are writable, the rest of the user's files are hidden, the environment is
+scrubbed and the network is open. It is left out of the tool list where there is no
+sandbox, which includes Windows.
+
+An app supplies two things:
+
+```rust,ignore
+struct MyApp { agent: egui_bench::agent::Agent<MyApp>, /* ... */ }
+
+impl egui_bench::agent::Backend for Mine {
+    fn app(&self) -> &'static str { "my-app" }
+    fn brief(&self, workspace: &Path, skills: &[Skill]) -> String { /* system prompt */ }
+    fn welcome(&self) -> Welcome { /* empty-state text */ }
+    fn specs(&self) -> Vec<Spec> { /* the app's own tools */ }
+    fn call(&self, name: &str, args: &Value, cx: &Cx) -> Option<Result<String, String>> {
+        // runs on the worker thread; cx.ask(name, args) reaches the host below
+    }
+}
+
+impl egui_bench::agent::Host for MyApp {
+    fn agent(&mut self) -> &mut Agent<Self> { &mut self.agent }
+    fn call(&mut self, ctx: &egui::Context, name: &str, args: &Value) -> Handled<Self> {
+        // runs on the UI thread, at the top of a frame: Handled::Now(reply), or
+        // Handled::Later(poll) for something that finishes on a later frame
+    }
+}
+```
+
+Each frame: `agent.poll()`, `agent.show(ui)` when its page is open, and
+`egui_bench::agent::serve(self, ctx)`. The binary must call
+`egui_bench::agent::sandbox::run_helper()` first thing in `main` and exit with its
+code when it returns `Some`, because the sandbox re-runs the app's own executable.
+Settings live in `<config dir>/<app>/agent`, readable by the user only.
 
 ### `drop` - a file over the window
 

@@ -111,6 +111,28 @@ egui::CentralPanel::no_frame().show(ui, |ui| {
 - Cards have 2 px corners and an `ETCH` stroke already. Never call `.corner_radius` with anything else, and never use shadows or gradients.
 - Request repaints only while something animates (`request_repaint_after`).
 
+## Inline controls in a row
+
+`choice` and `field` fill the width on offer, which is what a form row wants. Beside a legend or in a toolbar, give them a box:
+
+```rust
+ui.allocate_ui(egui::vec2(150.0, KEY_H), |ui| {
+    choice(ui, "cable", &mut self.cable, CABLES.iter().enumerate().map(|(i, c)| (i, c.name.to_string())));
+});
+field_then(ui, &mut self.path, "path to a file", 90.0, |ui| {
+    load = ui.add(Key::new("load").outline(VALUE)).clicked();
+});
+```
+
+`field_then(ui, text, hint, reserve, after)` sizes the field to the row minus `reserve` px and draws `after` beside it, so a search box with its key never overflows.
+
+- A selectable chip is `chip(ui, text, tint, lit).interact(egui::Sense::click())`, not a coloured `egui::Button`.
+- A key in a popup menu is `Key::new(label).outline(VALUE).min_width(ui.available_width())`, `FAULT` for the destructive entry.
+- A tiny dismiss or remove control is a `Key` labelled for what it does ("dismiss", "remove"), or `Key::more()` for a menu. Never `small_button("x")`.
+- `Key` and `egui::Key` collide under `use egui::*`; import `egui_bench::key::Key` by path in files that use both.
+- `Key` paints its label upper case, so a UI test that looks a button up by text searches for "OPEN", not "open".
+- Pin `egui_bench` to the same version across every app (`0.5.4` at the time of writing). A stale pin is the usual reason a component is missing.
+
 ## Modals
 
 Every dialog, confirmation and settings page is an `egui::Modal` with the same bones: unique id, black backdrop at alpha 150, fixed width, `modal_title`, content as `section` cards and `row`s, `footer` with keys. Waveshark's settings and printfarm's confirmations are the reference.

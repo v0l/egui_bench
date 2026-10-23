@@ -509,18 +509,28 @@ fn draw(ui: &mut Ui, block: &Block, n: usize) {
         }
         Block::Rule => rule(ui),
         Block::Table { head, rows } => {
-            egui::Grid::new(("md-table", n)).striped(true).spacing([16.0, 5.0]).show(ui, |ui| {
-                for c in head {
-                    cell(ui, c, BODY, true, true);
-                }
-                ui.end_row();
-                for row in rows {
-                    for c in row {
-                        cell(ui, c, BODY, false, true);
-                    }
-                    ui.end_row();
-                }
-            });
+            // Cells do not wrap, so a wide table would widen everything after it. The scroll area
+            // keeps it to the width it was given.
+            egui::ScrollArea::horizontal()
+                .id_salt(("md-table-scroll", n))
+                .auto_shrink([true, true])
+                .show(ui, |ui| {
+                    egui::Grid::new(("md-table", n)).striped(true).spacing([16.0, 5.0]).show(
+                        ui,
+                        |ui| {
+                            for c in head {
+                                cell(ui, c, BODY, true, true);
+                            }
+                            ui.end_row();
+                            for row in rows {
+                                for c in row {
+                                    cell(ui, c, BODY, false, true);
+                                }
+                                ui.end_row();
+                            }
+                        },
+                    );
+                });
         }
     }
 }

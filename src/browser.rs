@@ -46,7 +46,7 @@ impl Browser {
         let mut picked = Picked::Browsing;
         let modal =
             egui::Modal::new(egui::Id::new(("egui_bench_browser", &self.title))).show(ctx, |ui| {
-                ui.set_width(560.0);
+                ui.set_width(560.0_f32.min((ctx.content_rect().width() - 48.0).max(120.0)));
                 picked = self.body(ui);
             });
         match picked {
@@ -97,7 +97,7 @@ impl Browser {
             }
         });
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if self.folders && toggle(ui, "open this folder", false).clicked() {
                 picked = Picked::Folder(self.dir.clone());
             }

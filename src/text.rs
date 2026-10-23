@@ -9,6 +9,39 @@ const SPAN_GAP: f32 = 8.0;
 const LINE_H: f32 = 18.0;
 const LINE_BASELINE: f32 = 13.0;
 
+/// The width a widget may use on the line it is on. A wrapping row offers its whole width, because
+/// a widget that does not fit moves down to the next line; any other row offers what is left of it.
+/// Never under `MIN_ROOM`, so a nearly full row does not squeeze text into a column of letters.
+pub fn room(ui: &egui::Ui) -> f32 {
+    let width = if ui.layout().main_wrap() { ui.max_rect().width() } else { ui.available_width() };
+    width.max(MIN_ROOM)
+}
+
+const MIN_ROOM: f32 = 48.0;
+
+/// Lay `job` out on lines no wider than `width`. A word wider than that is broken, so nothing
+/// reaches past it.
+pub fn lay(ui: &egui::Ui, mut job: LayoutJob, width: f32) -> std::sync::Arc<egui::Galley> {
+    job.wrap.max_width = width.max(1.0);
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// `text` in capitals as one run of `font`, tracked by `spacing`, ready for [`lay`].
+pub fn caps(text: &str, font: FontId, tint: Color32, spacing: f32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.append(
+        &text.to_uppercase(),
+        0.0,
+        TextFormat {
+            font_id: font,
+            color: tint,
+            extra_letter_spacing: spacing,
+            ..Default::default()
+        },
+    );
+    job
+}
+
 pub fn legend(text: impl Into<String>) -> RichText {
     RichText::new(text.into().to_uppercase())
         .font(theme::legend_font(LEGEND_SIZE))
@@ -110,11 +143,21 @@ impl Line {
         self
     }
 
+    /// How big the line is when it has all the room it wants.
+    pub fn measure(&self, ui: &egui::Ui) -> Vec2 {
+        let mut job = self.job.clone();
+        job.wrap.max_width = f32::INFINITY;
+        ui.fonts_mut(|f| f.layout_job(job)).size()
+    }
+
     pub fn job(self) -> LayoutJob {
         self.job
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn show(mut self, ui: &mut egui::Ui) -> egui::Response {
+        if self.job.wrap.max_width == f32::INFINITY {
+            self.job.wrap.max_width = room(ui);
+        }
         let galley = ui.fonts_mut(|f| f.layout_job(self.job));
         let baseline = baseline_of(&galley);
         let size = galley.size();
@@ -128,7 +171,7 @@ impl Line {
     }
 
     pub fn elided(mut self, ui: &mut egui::Ui) -> egui::Response {
-        self.job.wrap.max_width = ui.available_width();
+        self.job.wrap.max_width = ui.available_width().max(1.0);
         self.job.wrap.max_rows = 1;
         self.job.wrap.overflow_character = Some('…');
         self.show(ui)

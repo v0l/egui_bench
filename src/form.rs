@@ -8,19 +8,64 @@ pub fn modal_title(ui: &mut Ui, text: &str) {
     ui.add_space(10.0);
 }
 
+/// Room the control wants beside its label. With less than this the label goes above it.
+const CONTROL_W: f32 = 150.0;
+
+fn stacked(ui: &Ui) -> bool {
+    ui.available_width() < LABEL_W + ui.spacing().item_spacing.x + CONTROL_W
+}
+
+/// The label in a column `LABEL_W` wide, wrapping inside it.
+fn label_cell(ui: &mut Ui, label: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(LABEL_W, 18.0),
+        Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(LABEL_W);
+            ui.add(egui::Label::new(legend(label)).wrap());
+        },
+    );
+}
+
+/// `add` in a row that wraps, so a control that does not fit goes to the next line instead of
+/// past the edge.
+fn controls(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        add(ui)
+    });
+}
+
 pub fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    if stacked(ui) {
+        ui.add(egui::Label::new(legend(label)).wrap());
+        controls(ui, add);
+        return;
+    }
     ui.horizontal(|ui| {
-        ui.add_sized([LABEL_W, 18.0], egui::Label::new(legend(label)));
+        label_cell(ui, label);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         add(ui);
     });
 }
 
 pub fn row_help(ui: &mut Ui, label: &str, text: &str, add: impl FnOnce(&mut Ui)) {
+    if stacked(ui) {
+        ui.add(egui::Label::new(legend(label)).wrap());
+        controls(ui, |ui| {
+            add(ui);
+            help(ui, text);
+        });
+        return;
+    }
     ui.horizontal(|ui| {
-        ui.add_sized([LABEL_W, 18.0], egui::Label::new(legend(label)));
+        label_cell(ui, label);
         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
             help(ui, text);
-            ui.with_layout(Layout::left_to_right(egui::Align::Center), add);
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                add(ui)
+            });
         });
     });
 }
@@ -45,6 +90,7 @@ pub fn choice<T: PartialEq + Clone>(
     egui::ComboBox::from_id_salt(id)
         .selected_text(shown.unwrap_or_default())
         .width(ui.available_width())
+        .truncate()
         .show_ui(ui, |ui| {
             for (v, label) in options {
                 let on = *picked == v;
@@ -152,9 +198,7 @@ pub fn footer(ui: &mut Ui, buttons: impl FnOnce(&mut Ui)) {
         Stroke::new(1.0, ETCH),
     );
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(egui::Align::Center), buttons);
-    });
+    ui.with_layout(Layout::right_to_left(egui::Align::Center).with_main_wrap(true), buttons);
 }
 
 #[cfg(test)]

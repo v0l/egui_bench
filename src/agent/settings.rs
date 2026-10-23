@@ -48,7 +48,7 @@ pub fn show(ui: &mut Ui, draft: &mut Config, app: &str, dir: Option<&Path>) -> O
     ui.add_space(12.0);
     hint(ui, &format!("Saved in {}, readable by you only.", where_saved(dir)));
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.add(Key::new("save").solid(READOUT).min_width(90.0)).clicked() {
             done = Some(Done::Save(draft.clone()));
         }

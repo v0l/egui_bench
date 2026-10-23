@@ -136,7 +136,7 @@ fn request_card(ui: &mut Ui, grants: &Grants, request: &Request) {
                 Line::new().note(request.reason.clone()).size(12.0).wrapped(ui);
             }
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if request.write
                     && ui
                         .add(Key::new("allow read and write").solid(READOUT))
@@ -176,41 +176,42 @@ fn welcome<H>(ui: &mut Ui, agent: &Agent<H>) {
         .elided(ui);
 }
 
+/// Below this width the header's three parts do not fit in a row, and are stacked instead.
+const HEAD_ROW: f32 = 420.0;
+
 fn head<H>(ui: &mut Ui, agent: &mut Agent<H>, busy: bool, mut on_model: Option<&mut Click<'_>>) {
-    ui.horizontal(|ui| {
-        let model = agent.chat.config.model.trim().to_string();
-        Line::new()
-            .legend("model")
-            .set(if model.is_empty() { "none".to_string() } else { model })
-            .size(11.0)
-            .show(ui);
-        ui.add_space(12.0);
-        Line::new()
-            .legend("workspace")
-            .value(tidy(&agent.chat.workspace_path()))
-            .size(11.0)
-            .elided(ui);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Model").clicked() {
-                match on_model.as_mut() {
-                    Some(open) => open(),
-                    None => agent.settings = Some(agent.chat.config.clone()),
-                }
+    let model = agent.chat.config.model.trim().to_string();
+    let model = if model.is_empty() { "none".to_string() } else { model };
+    let workspace = tidy(&agent.chat.workspace_path());
+    let mut buttons = |ui: &mut Ui| {
+        if ui.small_button("Model").clicked() {
+            match on_model.as_mut() {
+                Some(open) => open(),
+                None => agent.settings = Some(agent.chat.config.clone()),
             }
-            if ui
-                .add_enabled(
-                    !agent.chat.turns.is_empty() && !busy,
-                    egui::Button::new("Clear").small(),
-                )
-                .clicked()
-            {
-                agent.chat.clear();
-            }
-            if busy && ui.small_button("Stop").clicked() {
-                agent.chat.interrupt();
-            }
+        }
+        if ui
+            .add_enabled(!agent.chat.turns.is_empty() && !busy, egui::Button::new("Clear").small())
+            .clicked()
+        {
+            agent.chat.clear();
+        }
+        if busy && ui.small_button("Stop").clicked() {
+            agent.chat.interrupt();
+        }
+    };
+    if ui.available_width() >= HEAD_ROW {
+        ui.horizontal(|ui| {
+            Line::new().legend("model").set(model).size(11.0).show(ui);
+            ui.add_space(12.0);
+            Line::new().legend("workspace").value(workspace).size(11.0).elided(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
         });
-    });
+    } else {
+        ui.horizontal_wrapped(|ui| buttons(ui));
+        Line::new().legend("model").set(model).size(11.0).wrapped(ui);
+        Line::new().legend("workspace").value(workspace).size(11.0).wrapped(ui);
+    }
 }
 
 pub(super) fn tidy(path: &std::path::Path) -> String {

@@ -60,10 +60,21 @@ pub fn section<R>(
         ui,
         None,
         |ui| {
-            Line::new().legend(label).show(ui);
-            if !note.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    Line::new().note(note).size(10.5).elided(ui);
+            let label_w = Line::new().legend(label).measure(ui).x;
+            // The note sits at the right of the label while there is room for some of it, and
+            // goes under the label, wrapped, when there is not.
+            if note.is_empty() || ui.available_width() - label_w >= 60.0 {
+                Line::new().legend(label).show(ui);
+                if !note.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        Line::new().note(note).size(10.5).elided(ui);
+                    });
+                }
+            } else {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    Line::new().legend(label).show(ui);
+                    Line::new().note(note).size(10.5).wrapped(ui);
                 });
             }
         },
@@ -79,8 +90,11 @@ pub fn lamp(ui: &mut Ui, text: &str, on: bool, fault: bool) -> Response {
     } else {
         LEGEND
     };
-    let galley =
-        ui.painter().layout_no_wrap(text.to_uppercase(), theme::legend_font(LEGEND_SIZE), tint);
+    let galley = text::lay(
+        ui,
+        text::caps(text, theme::legend_font(LEGEND_SIZE), tint, 0.0),
+        text::room(ui) - 14.0,
+    );
     let size = galley.size() + Vec2::new(14.0, 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -99,8 +113,11 @@ pub fn lamp(ui: &mut Ui, text: &str, on: bool, fault: bool) -> Response {
 
 pub fn toggle(ui: &mut Ui, text: &str, on: bool) -> Response {
     let tint = if on { READOUT } else { LEGEND };
-    let galley =
-        ui.painter().layout_no_wrap(text.to_uppercase(), theme::legend_font(LEGEND_SIZE), tint);
+    let galley = text::lay(
+        ui,
+        text::caps(text, theme::legend_font(LEGEND_SIZE), tint, 0.0),
+        text::room(ui) - 26.0,
+    );
     let size = galley.size() + Vec2::new(26.0, 7.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let lit = on || resp.hovered();
@@ -133,11 +150,7 @@ pub fn toggle(ui: &mut Ui, text: &str, on: bool) -> Response {
         if on {
             p.rect_filled(tick.shrink(2.0), 0.0, tint);
         }
-        p.galley(
-            Pos2::new(tick.right() + 6.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            tint,
-        );
+        p.galley(Pos2::new(tick.right() + 6.0, rect.top() + 3.5), galley, tint);
     }
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -195,7 +208,10 @@ pub fn exit_note(ui: &mut Ui, text: &str, tint: Color32) {
         return;
     }
     ui.add_space(3.0);
-    ui.label(egui::RichText::new(text).font(theme::legend_font(12.0)).color(tint));
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).font(theme::legend_font(12.0)).color(tint))
+            .wrap(),
+    );
 }
 
 pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(T, &str)]) -> bool {
@@ -204,14 +220,29 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(T, &s
     const GAP: f32 = 20.0;
 
     let width = ui.available_width();
-    let (strip, _) = ui.allocate_exact_size(Vec2::new(width, TAB_H + MARK_H), Sense::hover());
+    let left = ui.cursor().left();
     let mut changed = false;
-    let mut marks = Vec::with_capacity(options.len());
-    let mut x = strip.left();
-    for (i, (value, label)) in options.iter().enumerate() {
-        let galley = ui.painter().layout_job(text::legend_job(label));
+    // Laid out first so the tabs can be set in rows: one that does not fit goes on the next row.
+    let mut placed = Vec::with_capacity(options.len());
+    let (mut x, mut row) = (0.0f32, 0usize);
+    for (value, label) in options {
+        let galley = text::lay(ui, text::legend_job(label), width);
         let w = galley.size().x;
-        let hit = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(w, TAB_H));
+        if x > 0.0 && x + w > width {
+            x = 0.0;
+            row += 1;
+        }
+        placed.push((value, galley, x, row, w));
+        x += w + GAP;
+    }
+    let rows = row + 1;
+    let height = rows as f32 * (TAB_H + MARK_H);
+    let (strip, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let mut marks = Vec::with_capacity(options.len());
+    for (i, (value, galley, x, row, w)) in placed.into_iter().enumerate() {
+        let top = strip.top() + row as f32 * (TAB_H + MARK_H);
+        let h = galley.size().y.max(TAB_H);
+        let hit = Rect::from_min_size(Pos2::new(left + x, top), Vec2::new(w, h));
         let r = ui.interact(hit, ui.id().with(("tab", i)), Sense::click());
         let on = *current == *value;
         if r.clicked() && !on {
@@ -219,20 +250,19 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(T, &s
             changed = true;
         }
         let colour = if on || r.hovered() { VALUE } else { LEGEND };
-        let at = Pos2::new(x, strip.top() + (TAB_H - galley.size().y) * 0.5);
+        let at = Pos2::new(left + x, top + (TAB_H - galley.size().y) * 0.5);
         ui.painter().galley(at, galley, colour);
-        marks.push((x, w, on));
-        x += w + GAP;
+        marks.push((left + x, top, w, on));
     }
-    let rule = Rect::from_min_size(
-        Pos2::new(strip.left(), strip.bottom() - MARK_H),
-        Vec2::new(width, 1.0),
-    );
-    ui.painter().rect_filled(rule, 0.0, ETCH);
-    for (x, w, on) in marks {
+    for row in 0..rows {
+        let bottom = strip.top() + (row + 1) as f32 * (TAB_H + MARK_H);
+        let rule =
+            Rect::from_min_size(Pos2::new(strip.left(), bottom - MARK_H), Vec2::new(width, 1.0));
+        ui.painter().rect_filled(rule, 0.0, ETCH);
+    }
+    for (x, top, w, on) in marks {
         if on {
-            let mark =
-                Rect::from_min_size(Pos2::new(x, strip.bottom() - MARK_H), Vec2::new(w, MARK_H));
+            let mark = Rect::from_min_size(Pos2::new(x, top + TAB_H), Vec2::new(w, MARK_H));
             ui.painter().rect_filled(mark, 0.0, READOUT);
         }
     }
@@ -241,18 +271,8 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(T, &s
 }
 
 pub fn chip(ui: &mut Ui, text: &str, tint: Color32, lit: bool) -> Response {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &text.to_uppercase(),
-        0.0,
-        egui::TextFormat {
-            font_id: theme::legend_font(10.5),
-            color: tint,
-            extra_letter_spacing: 1.4,
-            ..Default::default()
-        },
-    );
-    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let galley =
+        text::lay(ui, text::caps(text, theme::legend_font(10.5), tint, 1.4), text::room(ui) - 14.0);
     let size = galley.size() + Vec2::new(14.0, 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -304,9 +324,14 @@ pub fn segments<T: PartialEq + Copy>(
     current: &mut T,
     options: &[(T, &str, Option<usize>)],
 ) -> bool {
+    const PAD: f32 = 26.0;
     let mut changed = false;
+    let left = ui.cursor().left();
+    let width = ui.available_width();
     let top = ui.cursor().top();
-    let mut x = ui.cursor().left();
+    let mut x = 0.0f32;
+    let mut row = 0usize;
+    let mut right = 0.0f32;
     for (n, (value, label, count)) in options.iter().enumerate() {
         let on = *current == *value;
         let tint = if on { READOUT } else { LEGEND };
@@ -333,10 +358,17 @@ pub fn segments<T: PartialEq + Copy>(
                 },
             );
         }
-        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let galley = text::lay(ui, job, (width - PAD).max(1.0));
+        let w = galley.size().x + PAD;
+        let h = galley.size().y.max(crate::key::KEY_H - 12.0) + 12.0;
+        // A segment that does not fit on this row starts the next, one row below.
+        if x > 0.0 && x + w > width {
+            x = 0.0;
+            row += 1;
+        }
         let rect = Rect::from_min_size(
-            Pos2::new(x, top),
-            Vec2::new(galley.size().x + 26.0, crate::key::KEY_H),
+            Pos2::new(left + x, top + row as f32 * (crate::key::KEY_H - 1.0)),
+            Vec2::new(w, h.max(crate::key::KEY_H)),
         );
         let resp = ui.interact(rect, ui.id().with(("segment", n)), Sense::click());
         if ui.is_rect_visible(rect) {
@@ -367,11 +399,15 @@ pub fn segments<T: PartialEq + Copy>(
             *current = *value;
             changed = true;
         }
-        x = rect.right() - 1.0;
+        right = right.max(x + w);
+        x += w - 1.0;
     }
-    let left = ui.cursor().left();
+    let rows = row + 1;
     ui.allocate_rect(
-        Rect::from_min_max(Pos2::new(left, top), Pos2::new(x + 1.0, top + crate::key::KEY_H)),
+        Rect::from_min_max(
+            Pos2::new(left, top),
+            Pos2::new(left + right + 1.0, top + rows as f32 * (crate::key::KEY_H - 1.0) + 1.0),
+        ),
         Sense::hover(),
     );
     changed

@@ -118,8 +118,6 @@ pub fn install(ctx: &egui::Context) {
     style.text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
     style.text_styles.insert(TextStyle::Heading, legend_font(16.0));
 
-    style.wrap_mode = Some(egui::TextWrapMode::Extend);
-
     ctx.set_style_of(egui::Theme::Dark, style.clone());
     ctx.set_style_of(egui::Theme::Light, style);
 }

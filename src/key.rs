@@ -72,6 +72,11 @@ impl Key {
         text.max(self.min_width)
     }
 
+    /// The label laid out to fit a key `width` wide, on as many lines as it takes.
+    fn lettered(&self, ui: &Ui, ink: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+        crate::text::lay(ui, job(&self.label, ink), width - KEY_PAD)
+    }
+
     pub fn paint(self, ui: &mut Ui, rect: Rect) -> Response {
         let sense = if self.enabled { Sense::click() } else { Sense::hover() };
         let id = self.id.unwrap_or_else(|| {
@@ -108,7 +113,7 @@ impl Key {
                     p.circle_filled(rect.center() + egui::vec2(dx, 0.0), 1.6, tint);
                 }
             } else if !self.label.is_empty() {
-                let g = ui.fonts_mut(|f| f.layout_job(job(&self.label, ink)));
+                let g = self.lettered(ui, ink, rect.width());
                 ui.painter().galley(rect.center() - g.size() / 2.0, g, ink);
             }
             focus_ring(ui, &resp, rect);
@@ -122,8 +127,13 @@ impl Key {
 
 impl Widget for Key {
     fn ui(self, ui: &mut Ui) -> Response {
-        let w = self.width(ui);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, KEY_H), Sense::hover());
+        let w = self.width(ui).min(crate::text::room(ui));
+        let h = if self.label.is_empty() {
+            KEY_H
+        } else {
+            (self.lettered(ui, VALUE, w).size().y + 12.0).max(KEY_H)
+        };
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
         self.paint(ui, rect)
     }
 }
@@ -158,7 +168,7 @@ pub fn busy(ui: &mut Ui, rect: Rect, done: Option<f32>, label: &str, tint: Color
         }
     }
     p.rect_stroke(rect, RADIUS, Stroke::new(1.0, tint.gamma_multiply(0.6)), StrokeKind::Inside);
-    let g = ui.fonts_mut(|f| f.layout_job(job(label, tint)));
+    let g = crate::text::lay(ui, job(label, tint), rect.width() - KEY_PAD);
     p.galley(rect.center() - g.size() / 2.0, g, tint);
     resp
 }

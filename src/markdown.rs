@@ -246,6 +246,75 @@ fn inlines(events: &[Event], at: &mut usize) -> Vec<Span> {
         }
         *at += 1;
     }
+    autolinked(out)
+}
+
+/// Where a bare `http://` or `https://` address starts and ends in `text`. Agents rarely write
+/// `[words](url)`, so addresses typed as plain text are made links too. The end skips the
+/// punctuation that closes a sentence, and a `)` only counts when the address opened one.
+pub fn urls_in(text: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while from < text.len() {
+        let rest = &text[from..];
+        let Some(at) = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min() else {
+            break;
+        };
+        let start = from + at;
+        let before = text[..start].chars().next_back();
+        let tail = &text[start..];
+        let mut end = start
+            + tail
+                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+                .unwrap_or(tail.len());
+        loop {
+            let url = &text[start..end];
+            let Some(last) = url.chars().next_back() else { break };
+            let unmatched = url.matches(')').count() > url.matches('(').count();
+            let trim = match last {
+                '.' | ',' | ';' | ':' | '!' | '?' | '\'' | ']' | '}' | '*' => true,
+                ')' => unmatched,
+                _ => false,
+            };
+            if !trim {
+                break;
+            }
+            end -= last.len_utf8();
+        }
+        let scheme = if text[start..].starts_with("https://") { 8 } else { 7 };
+        let glued = before.is_some_and(|c| c.is_alphanumeric());
+        if end > start + scheme && !glued {
+            found.push(start..end);
+        }
+        from = end.max(start + scheme);
+    }
+    found
+}
+
+fn autolinked(spans: Vec<Span>) -> Vec<Span> {
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans {
+        if span.link.is_some() || span.style.code {
+            out.push(span);
+            continue;
+        }
+        let mut at = 0;
+        for url in urls_in(&span.text) {
+            if url.start > at {
+                out.push(Span { text: span.text[at..url.start].to_string(), ..span.clone() });
+            }
+            let address = span.text[url.clone()].to_string();
+            out.push(Span {
+                text: address.clone(),
+                style: span.style.clone(),
+                link: Some(address),
+            });
+            at = url.end;
+        }
+        if at < span.text.len() {
+            out.push(Span { text: span.text[at..].to_string(), ..span });
+        }
+    }
     out
 }
 
@@ -412,19 +481,26 @@ fn draw(ui: &mut Ui, block: &Block, n: usize) {
                     ui.add_space(4.0);
                     match start {
                         Some(first) => {
-                            ui.add_sized(
-                                [22.0, 18.0],
-                                Label::new(
-                                    RichText::new(format!("{}.", first + i as u64))
-                                        .font(figure(12.0))
-                                        .color(LEGEND),
-                                ),
+                            let mut job = LayoutJob::default();
+                            job.append(
+                                &format!("{}.", first + i as u64),
+                                0.0,
+                                TextFormat {
+                                    font_id: figure(12.0),
+                                    color: LEGEND,
+                                    ..Default::default()
+                                },
                             );
+                            align_baselines(ui, &mut job, BODY);
+                            ui.add_sized([22.0, BODY * 1.5], Label::new(job));
                         }
                         None => {
-                            let (rect, _) =
-                                ui.allocate_exact_size(egui::vec2(18.0, 18.0), Sense::hover());
-                            ui.painter().circle_filled(rect.center(), 2.5, LEGEND);
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(18.0, BODY * 1.5), Sense::hover());
+                            let base = ascent(ui, &FontId::proportional(BODY));
+                            let centre =
+                                egui::pos2(rect.center().x, rect.top() + base - BODY * 0.33);
+                            ui.painter().circle_filled(centre, 2.5, LEGEND);
                         }
                     }
                     ui.vertical(|ui| render(ui, item));
@@ -532,16 +608,42 @@ pub fn openable(url: &str) -> bool {
     lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
 }
 
+/// The distance from the top of a line to the baseline in `font`.
+fn ascent(ui: &Ui, font: &FontId) -> f32 {
+    ui.fonts_mut(|f| f.layout_no_wrap("x".into(), font.clone(), Color32::WHITE))
+        .rows
+        .first()
+        .and_then(|r| r.glyphs.first())
+        .map_or(0.0, |g| g.font_face_ascent)
+}
+
+/// Put every section of `job` on the baseline of the body font at `size`.
+///
+/// A row places each glyph from the top of its own line box, and fonts disagree on how far down
+/// the baseline sits, so code beside prose stood a little lower. Each section's line height is
+/// moved by the difference in ascent, and with the sections aligned to the bottom of the row that
+/// moves its baseline onto the body's.
+pub fn align_baselines(ui: &Ui, job: &mut LayoutJob, size: f32) {
+    let reference = ascent(ui, &FontId::proportional(size));
+    let line = size * 1.5;
+    for section in &mut job.sections {
+        let own = ascent(ui, &section.format.font_id);
+        section.format.line_height = Some((line + own - reference).max(1.0));
+        section.format.valign = egui::Align::BOTTOM;
+    }
+}
+
 fn inline(ui: &mut Ui, spans: &[Span], size: f32, bold_all: bool) {
     cell(ui, spans, size, bold_all, false);
 }
 
 fn cell(ui: &mut Ui, spans: &[Span], size: f32, bold_all: bool, extend: bool) {
-    let (job, links) = job_of(spans, size, bold_all);
+    let (mut job, links) = job_of(spans, size, bold_all);
     if job.text.is_empty() {
         ui.label("");
         return;
     }
+    align_baselines(ui, &mut job, size);
     let label = Label::new(job.clone());
     let mut label = if extend { label.extend() } else { label.wrap() };
     if !links.is_empty() {
@@ -568,6 +670,37 @@ fn cell(ui: &mut Ui, spans: &[Span], size: f32, bold_all: bool, extend: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn found(text: &str) -> Vec<&str> {
+        urls_in(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn plain_addresses_are_found_without_the_punctuation_around_them() {
+        assert_eq!(
+            found("see https://a.io/x, and http://b.io."),
+            ["https://a.io/x", "http://b.io"]
+        );
+        assert_eq!(found("(https://a.io/x)"), ["https://a.io/x"]);
+        assert_eq!(
+            found("https://en.wikipedia.org/wiki/Rust_(language)"),
+            ["https://en.wikipedia.org/wiki/Rust_(language)"]
+        );
+        assert_eq!(found("<https://a.io>"), ["https://a.io"]);
+        assert!(found("nothttps://a.io and https:// alone").is_empty());
+    }
+
+    #[test]
+    fn a_plain_address_becomes_a_link_but_code_and_named_links_are_left() {
+        let blocks = parse("go to https://a.io/x. `https://b.io` and [c](https://c.io)\n");
+        let Block::Paragraph(p) = &blocks[0] else { panic!("{:?}", blocks[0]) };
+        let links: Vec<_> = p.iter().filter_map(|s| s.link.as_deref()).collect();
+        assert_eq!(links, ["https://a.io/x", "https://c.io"]);
+        assert_eq!(
+            p.iter().map(|s| s.text.as_str()).collect::<String>(),
+            "go to https://a.io/x. https://b.io and c"
+        );
+    }
 
     fn plain(spans: &[Span]) -> String {
         spans.iter().map(|s| s.text.as_str()).collect()

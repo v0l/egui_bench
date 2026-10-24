@@ -187,6 +187,15 @@ patch in waveshark's workspace, which loads the CUDA runtime lazily). `cargo run
 --features speech --example say -- "hello" <model folder>` says something to `/tmp/said.wav`.
 The Kokoro engine is ported from waveshark's `tts` crate.
 
+`speech::Voicer` is the better voice to read with: Phonon (`gradium/phonon-31m-en`, Apache 2.0),
+ported to candle from gradium's `ptts` crate (MIT or Apache 2.0) and checked against it step by
+step. It spells out numbers, versions, units, dates and URLs as a person reads them, comes with
+25 English voices (`voices()`, `pick`), and streams: `say` hands over each frame's samples as
+they are made, about 80 ms of speech each. The model is 100 MB and a voice 250 KB, fetched with
+`download` and `fetch_voice`. On a GPU it makes 21 seconds of speech in 0.4; on a laptop CPU,
+in about 4. `cargo run --release --features speech --example voicer -- <empty folder> "hello"`
+fetches it and says something.
+
 ### `drop` - a file over the window
 
 `drop::hovering(ctx)` says whether files are being dragged over the window and

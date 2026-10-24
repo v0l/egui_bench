@@ -90,3 +90,7 @@ features = ["viewer3d", "update", "agent", "sandbox", "speech"]
 [[example]]
 name = "say"
 required-features = ["speech"]
+
+[[example]]
+name = "hear"
+required-features = ["speech"]

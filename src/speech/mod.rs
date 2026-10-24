@@ -8,6 +8,7 @@
 //! [`crate::voice::Server`] talks to.
 
 mod download;
+pub mod phonon;
 pub mod speak;
 mod speaker;
 mod transcriber;

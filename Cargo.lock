@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "egui_bench"
-version = "0.5.6"
+version = "0.6.0"
 dependencies = [
  "bytemuck",
  "byteorder",

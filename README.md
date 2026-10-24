@@ -167,6 +167,26 @@ Each frame: `agent.poll()`, `agent.show(ui)` when its page is open, and
 code when it returns `Some`, because the sandbox re-runs the app's own executable.
 Settings live in `<config dir>/<app>/agent`, readable by the user only.
 
+#### Voice for the agent window (`voice`, and feature `speech`)
+
+Speech both ways, for a chat you talk to and that talks back. The helpers need no feature at all, and with `agent` you also get a client, with nothing heavy: `voice::Server { url, key }` (with `agent`) posts a take to any server with
+OpenAI's `/audio/transcriptions` (`transcribe`, 16 kHz mono samples in, words out) and a sentence
+to `/audio/speech` (`speak`, samples and their rate out). Both block, so call them off the UI
+thread. Around them, `voice::speakable` turns a markdown reply into words (links read as their
+text, code and URLs left out), `voice::chunks` cuts text at sentences so the first can play while
+the rest are made, and `wav_bytes`, `read_wav`, `resample` and `to_whisper_rate` move samples
+about. `voice::VOICES` and `voice::LOCAL_MODELS` list the Kokoro voices and the Whisper models.
+
+Feature `speech` adds the models themselves, run in the app through candle: `speech::Transcriber`
+(Whisper, the models in `LOCAL_MODELS`) and `speech::Speaker` (Kokoro, about 330 MB, the voices in
+`VOICES`). Each fetches its files from Hugging Face the first time (`download`, which blocks) into
+a folder you give it, then stays loaded. An app serves them to other machines by answering the two
+endpoints above, which is how a phone uses the voices on a desktop. Add `speech-cuda` to run on an
+NVIDIA card when there is one; it still starts on a machine with none (this wants the candle
+patch in waveshark's workspace, which loads the CUDA runtime lazily). `cargo run --release
+--features speech --example say -- "hello" <model folder>` says something to `/tmp/said.wav`.
+The Kokoro engine is ported from waveshark's `tts` crate.
+
 ### `drop` - a file over the window
 
 `drop::hovering(ctx)` says whether files are being dragged over the window and

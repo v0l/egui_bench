@@ -17,12 +17,23 @@ update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "de
 markdown = ["dep:pulldown-cmark"]
 agent = ["markdown", "dep:ureq", "dep:serde", "dep:serde_json", "dep:dirs"]
 sandbox = ["agent", "dep:nono"]
+# Whisper and Kokoro, run in this process through candle. Pulls in candle, so it is off unless asked for.
+speech = ["agent", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:byteorder", "dep:tracing"]
+# Run them on an NVIDIA card when there is one. The CUDA runtime is loaded when first needed, so a
+# build with this still runs on a machine with no card (see the candle patch in waveshark).
+speech-cuda = ["speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 nono = { version = "0.80", default-features = false, optional = true }
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive"], optional = true }
+byteorder = { version = "1", optional = true }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
+tracing = { version = "0.1", optional = true }
 dirs = { version = "6", optional = true }
 egui = "0.35"
 egui-wgpu = { version = "0.35", optional = true }
@@ -72,4 +83,8 @@ name = "viewer3d"
 required-features = ["viewer3d"]
 
 [package.metadata.docs.rs]
-features = ["viewer3d", "update", "agent", "sandbox"]
+features = ["viewer3d", "update", "agent", "sandbox", "speech"]
+
+[[example]]
+name = "say"
+required-features = ["speech"]

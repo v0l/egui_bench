@@ -50,7 +50,7 @@ pub struct Whisper {
     language: Option<u32>,
 }
 
-/// The fastest device candle was built for and can run on: CUDA, then Metal, then the CPU. A card that opens and then cannot run
+/// The fastest device candle was built for and can run on. A card that opens and then cannot run
 /// a kernel (a driver older than the toolkit) is not worth stopping for: the CPU is slower and
 /// not nothing.
 pub fn best_device() -> (Device, &'static str) {

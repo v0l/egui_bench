@@ -1,7 +1,6 @@
 //! The speech models themselves, run in this process: Whisper reads a take, Kokoro says a
 //! sentence. Both go through candle, fetch their files from Hugging Face the first time, and stay
-//! loaded after. Feature `speech`; add `speech-cuda` to run them on an NVIDIA card, or `speech-metal`
-//! (Apple targets only) to run them on the Apple GPU, when there
+//! loaded after. Feature `speech`; add `speech-cuda` to run them on an NVIDIA card when there
 //! is one.
 //!
 //! An app with an agent window uses these on the machine it runs on, or serves them to

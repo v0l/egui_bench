@@ -1,10 +1,3 @@
-//! Read a WAV file with Whisper, from a models folder already on disc, and say which device ran it.
-//!
-//! `cargo run --release --features speech --example hear -- take.wav ~/.local/share/waveshark/models [model]`
-//!
-//! The WAV is mixed to mono and resampled to 16 kHz by picking samples, which is rough but enough
-//! to check that a device reads speech.
-
 use egui_bench::speech::Transcriber;
 
 fn main() -> Result<(), String> {

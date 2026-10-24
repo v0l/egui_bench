@@ -10,4 +10,7 @@ pub mod models;
 pub use audio::{SPEECH_RATE, chunks, read_wav, resample, speakable, to_whisper_rate, wav_bytes};
 #[cfg(all(feature = "agent", not(target_arch = "wasm32")))]
 pub use client::Server;
-pub use models::{DEFAULT_MODEL, DEFAULT_VOICE, LOCAL_MODELS, ModelInfo, VOICES, Voice, model};
+pub use models::{
+    DEFAULT_MODEL, DEFAULT_SPOKEN_VOICE, DEFAULT_VOICE, LOCAL_MODELS, ModelInfo, VOICES, Voice,
+    model,
+};

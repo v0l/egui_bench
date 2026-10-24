@@ -10,7 +10,7 @@ pub const VOICE_REPO: &str = "gradium/phonon-voices";
 pub const MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "model.safetensors"];
 pub const CATALOG: &str = "voices.jsonl";
 /// The voice when none is chosen: an even, standard American female voice.
-pub const DEFAULT_VOICE: &str = "Hadley";
+pub const DEFAULT_VOICE: &str = crate::voice::DEFAULT_SPOKEN_VOICE;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Voice {

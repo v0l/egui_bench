@@ -48,6 +48,11 @@ impl Voicer {
         get(&voices::voice_url(CATALOG), &self.dir.join(CATALOG), CATALOG, progress)
     }
 
+    /// Fetch the catalogue alone, so the voices can be listed before the model is wanted.
+    pub fn fetch_catalogue(&self) -> Result<(), String> {
+        get(&voices::voice_url(CATALOG), &self.dir.join(CATALOG), CATALOG, &|_| {})
+    }
+
     /// Fetch one voice, if it is not here yet.
     pub fn fetch_voice(
         &self,

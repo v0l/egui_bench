@@ -72,6 +72,10 @@ pub const VOICES: &[Voice] = &[
 /// The voice used when nobody picks one: the best graded of them.
 pub const DEFAULT_VOICE: &str = "af_heart";
 
+/// The voice a reply is read aloud in when none is chosen: one of Phonon's, which an app with
+/// the `speech` feature speaks in (`speech::phonon`).
+pub const DEFAULT_SPOKEN_VOICE: &str = "Hadley";
+
 /// The model used when none is chosen.
 pub const DEFAULT_MODEL: &str = "whisper-base.en";
 

@@ -1201,6 +1201,8 @@ dependencies = [
  "flate2",
  "nono",
  "pulldown-cmark",
+ "rand",
+ "rand_distr",
  "serde",
  "serde_json",
  "sha2 0.11.1",

@@ -68,12 +68,37 @@ fn main() -> candle_core::Result<()> {
     let mut prev: Option<Tensor> = None;
     let mut pcm = Vec::new();
     let mut countdown: Option<usize> = None;
+    let (mut force_worst, mut force_audio) = (0.0f32, 0.0f32);
     let budget = ((tokens.len() as f64 / 3.0 + 2.0) * 12.5).ceil() as usize;
     for step in 0..budget {
         let n = Tensor::from_vec(noise[step * 32..(step + 1) * 32].to_vec(), (1, 32), &dev)?;
         let (latent, eos, logit) = model.step(&mut state, prev.as_ref(), &n)?;
         let audio = model.decode(&latent, &mut mimi)?;
-        if step < 6 {
+        if std::env::var("FORCE").is_ok() {
+            let (_, want) = r.get(&format!("latent.{step}")).unwrap();
+            let e =
+                flat(&latent).iter().zip(want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            let (_, wa) = r.get(&format!("audio.{step}")).unwrap();
+            let ea = audio.iter().zip(wa).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            force_worst = force_worst.max(e);
+            force_audio = force_audio.max(ea);
+            if step % 8 == 0 {
+                println!("forced step {step:3}: latent err {e:.2e}  audio err {ea:.2e}");
+            }
+            let forced = Tensor::from_vec(want.to_vec(), (1, 1, 32), &dev)?;
+            pcm.extend(audio);
+            if eos && countdown.is_none() {
+                countdown = Some(frames_after_eos);
+            }
+            match countdown.as_mut() {
+                Some(0) => break,
+                Some(c) => *c -= 1,
+                None => {}
+            }
+            prev = Some(forced);
+            continue;
+        }
+        if step < 6 && false {
             worst = worst.max(report(
                 &format!("latent.{step}"),
                 &flat(&latent),
@@ -111,6 +136,11 @@ fn main() -> candle_core::Result<()> {
     let n = pcm.len().min(want.len());
     worst = worst.max(report("pcm (overlap)", &pcm[..n], &want[..n]));
     println!("WORST relative error: {worst:.3e}");
+    if std::env::var("FORCE").is_ok() {
+        println!(
+            "TEACHER FORCED, every step: worst latent err {force_worst:.2e}, worst audio err {force_audio:.2e}"
+        );
+    }
     Ok(())
 }
 

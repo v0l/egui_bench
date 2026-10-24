@@ -107,3 +107,7 @@ required-features = ["speech"]
 [[example]]
 name = "phonon_say"
 required-features = ["speech"]
+
+[[example]]
+name = "voicer"
+required-features = ["speech"]

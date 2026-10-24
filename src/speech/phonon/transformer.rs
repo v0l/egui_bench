@@ -277,7 +277,7 @@ pub struct TransformerShape {
 
 impl Transformer {
     pub fn load(vb: VarBuilder, s: &TransformerShape) -> Result<Self> {
-        if s.heads == 0 || s.dim % s.heads != 0 {
+        if s.heads == 0 || !s.dim.is_multiple_of(s.heads) {
             candle_core::bail!("{} attention heads do not divide the width {}", s.heads, s.dim)
         }
         let layers = (0..s.layers)

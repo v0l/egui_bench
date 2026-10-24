@@ -13,6 +13,7 @@ pub mod plan;
 mod seanet;
 pub mod text;
 mod transformer;
+pub mod voices;
 
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::VarBuilder;

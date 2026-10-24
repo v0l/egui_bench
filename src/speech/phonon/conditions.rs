@@ -50,7 +50,7 @@ fn default_value(name: &str) -> Option<&'static str> {
 
 /// `dim` values, cosines then sines, of `position` over geometric periods up to `max_period`.
 pub fn sin_embedding(position: f32, dim: usize, max_period: f32) -> Result<Vec<f32>> {
-    if dim < 4 || dim % 2 != 0 {
+    if dim < 4 || !dim.is_multiple_of(2) {
         candle_core::bail!("a sinusoidal embedding needs an even dim of at least 4, got {dim}")
     }
     let half = dim / 2;

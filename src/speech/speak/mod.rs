@@ -28,13 +28,13 @@ pub use files::{Files, installed, wanted};
 /// Here the fallback costs less than it used to, since this model is faster
 /// than the speech it makes either way.
 pub fn best_device() -> candle_core::Device {
-    #[cfg(all(feature = "speech-cuda", not(target_vendor = "apple")))]
+    #[cfg(feature = "speech-cuda")]
     if let Ok(d) = open_cuda(0)
         && runs(&d)
     {
         return d;
     }
-    #[cfg(target_vendor = "apple")]
+    #[cfg(feature = "speech-metal")]
     if let Ok(d) = candle_core::Device::new_metal(0)
         && runs(&d)
     {

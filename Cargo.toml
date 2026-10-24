@@ -22,6 +22,8 @@ speech = ["agent", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 # Run them on an NVIDIA card when there is one. The CUDA runtime is loaded when first needed, so a
 # build with this still runs on a machine with no card (see the candle patch in waveshark).
 speech-cuda = ["speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# Run them on the Apple GPU through Metal. Only builds for macOS and iOS; on any other target leave it off.
+speech-metal = ["speech", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 nono = { version = "0.80", default-features = false, optional = true }

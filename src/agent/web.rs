@@ -617,7 +617,13 @@ fn parse_url(raw: &str) -> Result<Url, String> {
         .or_else(|_| Url::parse(&format!("https://{raw}")))
         .map_err(|e| format!("{raw:?} is not a web address ({e})"))?;
     match url.scheme() {
-        "http" | "https" if url.host_str().is_some() => Ok(url),
+        "http" | "https" if url.host_str().is_some() => {
+            if let Some(bad) = super::http::refused_target(&url) {
+                Err(format!("refusing to fetch {bad}: link-local and metadata addresses are not fetched"))
+            } else {
+                Ok(url)
+            }
+        }
         s => Err(format!("only http and https addresses can be fetched, not {s}")),
     }
 }

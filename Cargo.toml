@@ -1,6 +1,6 @@
 [package]
 name = "egui_bench"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT AND OFL-1.1"
@@ -15,6 +15,7 @@ exclude = ["docs/*"]
 viewer3d = ["dep:egui-wgpu", "dep:wgpu", "dep:bytemuck"]
 update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "dep:zip"]
 markdown = ["dep:pulldown-cmark"]
+chat = ["markdown"]
 agent = ["markdown", "dep:ureq", "dep:serde", "dep:serde_json", "dep:dirs", "dep:tokio", "dep:tokio-util", "dep:reqwest", "dep:rustls", "dep:webpki-roots", "dep:async-trait", "dep:futures-util", "dep:scraper", "dep:url", "dep:ignore", "dep:base64"]
 sandbox = ["agent", "dep:nono"]
 mcp = ["agent"]

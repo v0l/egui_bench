@@ -118,6 +118,15 @@ tables, nested and task lists, quotes, rules and links. Links open only if they 
 http, https or mailto. The `Cache` parses a reply once and forgets it when it stops
 being drawn, and an unfinished fence while a reply streams is already a code block.
 
+### `chat` - a plain model chat (feature `chat`)
+
+Pieces for a chat with a model, with no async runtime and no network code. Plain data in, `chat::Event`s out
+(`Sent(text)`, `Stop`, `Regenerate(i)`, `Copy(i)`, `Select(i)`, `Delete(i)`, `New`).
+`transcript(ui, &mut cache, &messages, streaming, strip)` draws the bubbles (markdown replies with a copy key on
+every code block, copy and regenerate keys under a reply) and calls the `strip` hook under each assistant reply
+to draw your own stats. `ask_box` is the multiline field: Enter sends, Shift+Enter adds a line, and the key turns
+into stop while busy. `conversations` is the sidebar list, `context_bar` the usage bar, `welcome` the empty state.
+
 ### `agent` - a coding agent in a window (feature `agent`)
 
 A chat with any OpenAI-compatible server that has tool calls, filling the central

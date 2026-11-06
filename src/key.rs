@@ -121,6 +121,10 @@ impl Key {
         if hot {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        if !self.label.is_empty() {
+            let (label, enabled) = (self.label.clone(), self.enabled);
+            resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.clone()));
+        }
         resp
     }
 }

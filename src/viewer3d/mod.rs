@@ -113,6 +113,7 @@ pub struct Surface<M = ()> {
     pub positions: Vec<V3>,
     pub normals: Vec<V3>,
     pub uvs: Vec<[f32; 2]>,
+    pub colours: Vec<V3>,
     pub colour: V3,
     pub texture: Option<usize>,
     pub normal_map: Option<usize>,

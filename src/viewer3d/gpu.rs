@@ -649,14 +649,16 @@ fn gather<M: Material>(scene: &Scene<M>) -> Vec<Gathered<M>> {
         let Some(id) = id else { continue };
         let key = batch_key(scene, s);
         let g = out[id].get_or_insert_with(|| Gathered { key, vertices: Vec::new(), aabb: EMPTY });
-        let colour = s.colour.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
+        let linear = |c: V3| c.map(|c| to_linear((c.clamp(0.0, 1.0) * 255.0).round() / 255.0));
+        let colour = linear(s.colour);
+        let painted = s.colours.len() >= s.positions.len();
         let tangents = if key.2[1].is_some() { tangents(s) } else { Vec::new() };
         for (i, p) in s.positions.iter().take(s.positions.len() / 3 * 3).enumerate() {
             grow(&mut g.aabb, *p);
             g.vertices.push(Vertex {
                 position: *p,
                 normal: s.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]),
-                colour,
+                colour: if painted { linear(s.colours[i]) } else { colour },
                 uv: s.uvs.get(i).copied().unwrap_or_default(),
                 pad: 0.0,
                 tangent: tangents.get(i).copied().unwrap_or_default(),

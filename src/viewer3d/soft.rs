@@ -145,6 +145,11 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
         let frames = if bumps.is_some() { tangents(surface) } else { Vec::new() };
         let tint = if look.selected && shading.tinted { style.selected_tint } else { 0.0 };
         let base = surface.colour.map(to_linear);
+        let painted: Vec<V3> = if surface.colours.len() >= surface.positions.len() {
+            surface.colours.iter().map(|c| c.map(to_linear)).collect()
+        } else {
+            Vec::new()
+        };
         let positions: Vec<V3> = surface.positions.iter().map(|p| look.place(*p)).collect();
         for t in (0..positions.len() / 3).map(|i| i * 3) {
             let corners = [positions[t], positions[t + 1], positions[t + 2]];
@@ -264,6 +269,7 @@ pub(super) fn render<M: Material>(viewer: &Viewer<M>, width: usize, height: usiz
                         Some(image) if surface.uvs.len() > t + 2 => {
                             sample(image, uv(0), uv(1)).map(to_linear)
                         }
+                        _ if !painted.is_empty() => lerp(&painted),
                         _ => base,
                     };
                     let albedo = [0, 1, 2].map(|k| albedo[k] + (selected[k] - albedo[k]) * tint);

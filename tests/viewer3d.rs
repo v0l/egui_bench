@@ -168,6 +168,29 @@ fn the_gpu_draws_what_the_software_renderer_draws() {
     agrees(Viewer::new(scene, turned), "turned");
 }
 
+fn painted_per_vertex() -> Scene<Finish> {
+    let mut s = cube([0.0, 0.0, 0.0], 1.0, 0, Finish::Paint);
+    s.colours = s
+        .positions
+        .iter()
+        .map(|p| if p[0] < 0.0 { [0.9, 0.1, 0.1] } else { [0.1, 0.2, 0.9] })
+        .collect();
+    Scene { surfaces: vec![s], radius: 2.0, ..Default::default() }
+}
+
+#[test]
+fn vertex_colours_paint_the_surface_on_both_renderers() {
+    let scene = Arc::new(painted_per_vertex());
+    let viewer = Viewer::new(scene, Camera::default());
+    let soft = viewer.render_soft(SIZE[0], SIZE[1]);
+    let reds = soft.pixels.iter().filter(|p| p.r() / 2 > p.b() && p.r() > 60).count();
+    let blues = soft.pixels.iter().filter(|p| p.b() / 2 > p.r() && p.b() > 60).count();
+    assert!(reds > 500 && blues > 500, "{reds} red, {blues} blue");
+    if available() {
+        agrees(viewer, "vertex colours");
+    }
+}
+
 #[test]
 fn every_debug_mode_draws_what_the_software_renderer_draws() {
     if !available() {

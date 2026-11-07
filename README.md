@@ -122,10 +122,15 @@ being drawn, and an unfinished fence while a reply streams is already a code blo
 
 Pieces for a chat with a model, with no async runtime and no network code. Plain data in, `chat::Event`s out
 (`Sent(text)`, `Stop`, `Regenerate(i)`, `Copy(i)`, `Select(i)`, `Delete(i)`, `New`).
-`transcript(ui, &mut cache, &messages, streaming, strip)` draws the bubbles (markdown replies with a copy key on
-every code block, copy and regenerate keys under a reply) and calls the `strip` hook under each assistant reply
-to draw your own stats. `ask_box` is the multiline field: Enter sends, Shift+Enter adds a line, and the key turns
-into stop while busy. `conversations` is the sidebar list, `context_bar` the usage bar, `welcome` the empty state.
+`transcript(ui, &mut cache, &messages, streaming, strip)` draws the turns the way agentbench does: your messages
+in a panel with an amber rail, replies as plain markdown with a copy key on every code block, a leading
+`<think>...</think>` folded into a grey thinking block, copy and regenerate links under a reply, and a spinner
+under the live reply. The `strip` hook runs under each assistant reply to draw your own stats, and
+`transcript_with` takes one more closure for whatever goes under the last turn, such as `fault(ui, title,
+detail)`. `header` shows a lamp and the model chip, with your keys on the right, `ask_box` (or `ask_box_with`,
+which puts your status line beside the key) is the composer: Enter sends, Shift+Enter adds a line, and the key
+turns into stop while busy. `conversations` is the sidebar list, `context_bar` the usage bar, `welcome` the
+empty state. `rail_block` in the prelude is the railed block the turns are drawn in.
 
 ### `agent` - a coding agent in a window (feature `agent`)
 

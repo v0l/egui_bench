@@ -41,7 +41,8 @@ pub mod prelude {
     pub use crate::key::{KEY_H, Key, Look, busy};
     pub use crate::meter::{FADER_H, Fader, Threshold, VU_H, bar, progress, vu};
     pub use crate::panel::{
-        card, chip, exit_note, heading, lamp, section, segments, stage_rail, status, tabs, toggle,
+        card, chip, exit_note, heading, lamp, rail_block, section, segments, stage_rail, status,
+        tabs, toggle,
     };
     pub use crate::readout::{LABEL_W, READOUT_W, hero, reading, readout, readouts};
     pub use crate::table::{ROW_H, Table, cell};

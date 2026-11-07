@@ -50,6 +50,28 @@ pub fn card<R>(
     framed
 }
 
+pub fn rail_block<R>(
+    ui: &mut Ui,
+    rail: Color32,
+    fill: Color32,
+    body: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<R> {
+    let framed = egui::Frame::NONE
+        .fill(fill)
+        .inner_margin(egui::Margin { left: 12, right: 8, top: 4, bottom: 4 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui)
+        });
+    let r = framed.response.rect;
+    ui.painter().rect_filled(
+        Rect::from_min_max(r.left_top(), Pos2::new(r.left() + RAIL_W, r.bottom())),
+        0.0,
+        rail,
+    );
+    framed
+}
+
 pub fn section<R>(
     ui: &mut Ui,
     label: &str,

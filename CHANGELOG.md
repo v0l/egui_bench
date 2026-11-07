@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.7
+
 - `chat` draws turns like agentbench: railed user blocks, plain markdown replies, folded thinking, copy and regenerate links, a live spinner, `header`, `fault`, `ask_box_with` and `transcript_with`.
 - Add `rail_block` to the prelude.
 

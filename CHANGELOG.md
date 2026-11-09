@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.8
+
+- `gix` is gated off wasm32, so web builds no longer pull it in.
+
 ## 0.9.7
 
 - `chat` draws turns like agentbench: railed user blocks, plain markdown replies, folded thinking, copy and regenerate links, a live spinner, `header`, `fault`, `ask_box_with` and `transcript_with`.

@@ -438,7 +438,7 @@ mod tests {
         url: String,
     ) -> (Worker, Receiver<Update>, std::sync::mpsc::Receiver<super::super::Ask>) {
         let (out, updates) = channel();
-        let (desk, asks) = Desk::new(&egui::Context::default());
+        let (desk, asks) = crate::agent::desk(&egui::Context::default());
         let dir = std::env::temp_dir().join(format!("bench-chat-ws-{}", std::process::id()));
         let w = Worker {
             backend: Arc::new(Test::new()),
@@ -665,7 +665,7 @@ mod tests {
         if c.config.workspace.is_empty() {
             return;
         }
-        let (desk, _asks) = Desk::new(&egui::Context::default());
+        let (desk, _asks) = crate::agent::desk(&egui::Context::default());
         c.ask("hello", desk);
         assert!(!c.busy(), "nothing was started");
         let Some(Turn::Fault(why)) = c.turns.last() else {
@@ -707,7 +707,7 @@ mod tests {
     fn a_chat_with_no_model_says_so() {
         let mut chat = Chat { config: Config::default(), ..chat() };
         chat.config.model.clear();
-        let (desk, _asks) = Desk::new(&egui::Context::default());
+        let (desk, _asks) = crate::agent::desk(&egui::Context::default());
         chat.ask("what things are there", desk);
         assert_eq!(chat.turns.len(), 2);
         assert!(matches!(chat.turns[1], Turn::Fault(_)));

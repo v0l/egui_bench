@@ -28,6 +28,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-core"
+version = "0.1.0"
+source = "git+https://github.com/v0l/agentbench?branch=master#e0af3f762438783027b4cee2ef679a1d1cc3f362"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "dirs",
+ "futures-util",
+ "ignore",
+ "nono",
+ "reqwest",
+ "rustls",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+ "webpki-roots",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1324,8 +1346,7 @@ dependencies = [
 name = "egui_bench"
 version = "0.9.7"
 dependencies = [
- "async-trait",
- "base64 0.23.1",
+ "agent-core",
  "bytemuck",
  "byteorder",
  "candle-core",
@@ -1339,14 +1360,9 @@ dependencies = [
  "flate2",
  "futures-util",
  "gix",
- "ignore",
- "nono",
  "pulldown-cmark",
  "rand",
  "rand_distr",
- "reqwest",
- "rustls",
- "scraper",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1354,12 +1370,9 @@ dependencies = [
  "tempfile",
  "tokenizers 0.23.2",
  "tokio",
- "tokio-util",
  "tracing",
  "ureq",
- "url",
  "web-time",
- "webpki-roots",
  "wgpu",
  "zip 9.0.2",
 ]

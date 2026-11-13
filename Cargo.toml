@@ -16,9 +16,9 @@ viewer3d = ["dep:egui-wgpu", "dep:wgpu", "dep:bytemuck"]
 update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "dep:zip"]
 markdown = ["dep:pulldown-cmark"]
 chat = ["markdown"]
-agent = ["markdown", "dep:ureq", "dep:serde", "dep:serde_json", "dep:dirs", "dep:tokio", "dep:tokio-util", "dep:reqwest", "dep:rustls", "dep:webpki-roots", "dep:async-trait", "dep:futures-util", "dep:scraper", "dep:url", "dep:ignore", "dep:base64"]
-sandbox = ["agent", "dep:nono"]
-mcp = ["agent"]
+agent = ["markdown", "dep:agent-core", "dep:ureq", "dep:serde", "dep:serde_json", "dep:dirs", "dep:tokio", "dep:futures-util"]
+sandbox = ["agent", "agent-core/sandbox"]
+mcp = ["agent", "agent-core/mcp"]
 # Whisper and Kokoro, run in this process through candle. Pulls in candle, so it is off unless asked for.
 speech = ["agent", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:byteorder", "dep:tracing", "dep:rand", "dep:rand_distr"]
 # Run them on an NVIDIA card when there is one. The CUDA runtime is loaded when first needed, so a
@@ -26,24 +26,13 @@ speech = ["agent", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers"
 speech-cuda = ["speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 speech-metal = ["speech", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-nono = { version = "0.80", default-features = false, optional = true }
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gix = { version = "0.90", default-features = false, features = ["revision", "sha1", "parallel"] }
 
 [dependencies]
-base64 = { version = "0.23", optional = true }
-async-trait = { version = "0.1", optional = true }
+agent-core = { git = "https://github.com/v0l/agentbench", branch = "master", default-features = false, optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
-ignore = { version = "0.4", optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json", "stream", "gzip"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
-scraper = { version = "0.25", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"], optional = true }
-tokio-util = { version = "0.7", optional = true }
-url = { version = "2", optional = true }
-webpki-roots = { version = "1", optional = true }
 bytemuck = { version = "1.25", features = ["derive"], optional = true }
 byteorder = { version = "1", optional = true }
 candle-core = { version = "0.11", optional = true }
@@ -89,12 +78,6 @@ required-features = ["viewer3d"]
 [[test]]
 name = "materials"
 required-features = ["viewer3d"]
-
-[[test]]
-name = "agent_sandbox"
-path = "tests/agent_sandbox.rs"
-harness = false
-required-features = ["sandbox"]
 
 [[example]]
 name = "gallery"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0
+
 - The agent moves to v0l/agentbench: `agent-core` (tools, workspace, grants, MCP, language servers, sandbox, web, skills), `agent-ui` (chat, pane, settings, `Agent`, `Host`, `serve`) and `agent-voice` (Whisper, Phonon, the speech client and audio helpers). The `agent`, `sandbox`, `mcp`, `speech`, `speech-cuda` and `speech-metal` features and the `egui_bench::agent`, `egui_bench::speech` and `egui_bench::voice` modules are removed.
 
 ## 0.9.8

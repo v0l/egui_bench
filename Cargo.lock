@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "egui_bench"
-version = "0.9.8"
+version = "0.10.0"
 dependencies = [
  "bytemuck",
  "eframe",

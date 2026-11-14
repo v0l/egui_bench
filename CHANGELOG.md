@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- The UI-free agent (tools, workspace, grants, MCP client, language servers, sandbox, web, skills) moves to the `agent-core` crate in v0l/agentbench. `egui_bench::agent` re-exports it, so paths such as `egui_bench::agent::tools` and `egui_bench::agent::sandbox::run_helper` still work. `Desk::new` takes a repaint callback; `egui_bench::agent::desk(&ctx)` builds one for an egui context. The sandbox integration test now lives in `agent-core`.
+- The agent moves to v0l/agentbench: `agent-core` (tools, workspace, grants, MCP, language servers, sandbox, web, skills), `agent-ui` (chat, pane, settings, `Agent`, `Host`, `serve`) and `agent-voice` (Whisper, Phonon, the speech client and audio helpers). The `agent`, `sandbox`, `mcp`, `speech`, `speech-cuda` and `speech-metal` features and the `egui_bench::agent`, `egui_bench::speech` and `egui_bench::voice` modules are removed.
+
+## 0.9.8
+
+- `gix` is gated off wasm32, so web builds no longer pull it in.
 
 ## 0.9.7
 

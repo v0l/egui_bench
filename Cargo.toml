@@ -1,6 +1,6 @@
 [package]
 name = "egui_bench"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT AND OFL-1.1"
@@ -16,38 +16,16 @@ viewer3d = ["dep:egui-wgpu", "dep:wgpu", "dep:bytemuck"]
 update = ["dep:ureq", "dep:serde_json", "dep:flate2", "dep:tar", "dep:sha2", "dep:zip"]
 markdown = ["dep:pulldown-cmark"]
 chat = ["markdown"]
-agent = ["markdown", "dep:agent-core", "dep:ureq", "dep:serde", "dep:serde_json", "dep:dirs", "dep:tokio", "dep:futures-util"]
-sandbox = ["agent", "agent-core/sandbox"]
-mcp = ["agent", "agent-core/mcp"]
-# Whisper and Kokoro, run in this process through candle. Pulls in candle, so it is off unless asked for.
-speech = ["agent", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:byteorder", "dep:tracing", "dep:rand", "dep:rand_distr"]
-# Run them on an NVIDIA card when there is one. The CUDA runtime is loaded when first needed, so a
-# build with this still runs on a machine with no card (see the candle patch in waveshark).
-speech-cuda = ["speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-speech-metal = ["speech", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gix = { version = "0.90", default-features = false, features = ["revision", "sha1", "parallel"] }
 
 [dependencies]
-agent-core = { git = "https://github.com/v0l/agentbench", branch = "master", default-features = false, optional = true }
-futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"], optional = true }
 bytemuck = { version = "1.25", features = ["derive"], optional = true }
-byteorder = { version = "1", optional = true }
-candle-core = { version = "0.11", optional = true }
-candle-nn = { version = "0.11", optional = true }
-candle-transformers = { version = "0.11", optional = true }
-tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
-tracing = { version = "0.1", optional = true }
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng"], optional = true }
-rand_distr = { version = "0.5", optional = true }
-dirs = { version = "6", optional = true }
 egui = "0.37"
 egui-wgpu = { version = "0.37", optional = true }
 flate2 = { version = "1.1.10", optional = true }
 pulldown-cmark = { version = "0.13", default-features = false, optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.11.1", optional = true }
 tar = { version = "0.4.46", optional = true }
@@ -58,7 +36,6 @@ zip = { version = "9.0.2", default-features = false, features = ["deflate"], opt
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 egui_kittest = { version = "0.37", features = ["wgpu"] }
 eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
@@ -85,30 +62,6 @@ name = "gallery"
 [[example]]
 name = "viewer3d"
 required-features = ["viewer3d"]
-
 [package.metadata.docs.rs]
-features = ["viewer3d", "update", "agent", "sandbox", "speech", "mcp"]
+features = ["viewer3d", "update"]
 
-[[example]]
-name = "say"
-required-features = ["speech"]
-
-[[example]]
-name = "hear"
-required-features = ["speech"]
-
-[[example]]
-name = "phonon_match"
-required-features = ["speech"]
-
-[[example]]
-name = "phonon_normalize"
-required-features = ["speech"]
-
-[[example]]
-name = "phonon_say"
-required-features = ["speech"]
-
-[[example]]
-name = "voicer"
-required-features = ["speech"]

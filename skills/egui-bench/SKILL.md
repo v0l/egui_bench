@@ -14,7 +14,7 @@ use egui_bench::prelude::*;                  // everything below comes from here
 
 `install` sets fonts, dark visuals, 2 px corners and text styles. After it, stock egui widgets (checkbox, combo box, scroll area, drag value, slider) are already on-brand. Never call `set_visuals`, `set_style`, `set_fonts` or `set_theme` afterwards, and never ship a light theme.
 
-Crate features: `markdown`, `agent` (coding-agent pane), `sandbox`, `viewer3d`, `update`. Enable only what the app uses. Read `~/git/egui_bench/README.md` for the full API and run `cargo run --example gallery` (in `~/git/egui_bench`) to see every component. Sources worth copying from: `~/git/super-radio/crates/app/src/ui/settings.rs` (modals), `~/git/printfarm/src/app.rs` (modals, header, keys), `~/git/cycler/crates/ui/src/main.rs` (cards, comb, stage rail), `~/git/bench-suite/src/view.rs` (shell).
+Crate features: `markdown`, `chat`, `viewer3d`, `update`. The coding-agent pane is `agent-ui` in v0l/agentbench. Enable only what the app uses. Read `~/git/egui_bench/README.md` for the full API and run `cargo run --example gallery` (in `~/git/egui_bench`) to see every component. Sources worth copying from: `~/git/super-radio/crates/app/src/ui/settings.rs` (modals), `~/git/printfarm/src/app.rs` (modals, header, keys), `~/git/cycler/crates/ui/src/main.rs` (cards, comb, stage rail), `~/git/bench-suite/src/view.rs` (shell).
 
 ## Colour grammar
 

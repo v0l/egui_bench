@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-#[cfg(all(feature = "agent", not(target_arch = "wasm32")))]
-pub mod agent;
 pub mod browser;
 #[cfg(feature = "chat")]
 pub mod chat;
@@ -16,8 +14,6 @@ pub mod panel;
 pub mod readout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod revision;
-#[cfg(all(feature = "speech", not(target_arch = "wasm32")))]
-pub mod speech;
 pub mod table;
 pub mod text;
 pub mod theme;
@@ -27,7 +23,6 @@ pub mod trace;
 pub mod update;
 #[cfg(feature = "viewer3d")]
 pub mod viewer3d;
-pub mod voice;
 
 pub use theme::install;
 
